@@ -537,4 +537,12 @@ class DataLoaderImpl(DataLoader):
 
     def __iter__(self):
         for batch in self._data_loader:
-            yield _model.Observation.from_dict(batch), batch["actions"]
+            extras = {
+                key: batch[key]
+                for key in ("frameskip_score", "frameskip_chunk_label", "wavelet_gate_label")
+                if key in batch
+            }
+            if extras:
+                yield _model.Observation.from_dict(batch), batch["actions"], extras
+            else:
+                yield _model.Observation.from_dict(batch), batch["actions"]

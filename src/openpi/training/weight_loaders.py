@@ -50,8 +50,8 @@ class CheckpointWeightLoader(WeightLoader):
     def load(self, params: at.Params) -> at.Params:
         # We are loading np.ndarray and relying on the training code to properly convert and shard the params.
         loaded_params = _model.restore_params(download.maybe_download(self.params_path), restore_type=np.ndarray)
-        # Add all missing LoRA weights.
-        return _merge_params(loaded_params, params, missing_regex=".*lora.*")
+        # Add all missing LoRA / optional wavelet-head weights.
+        return _merge_params(loaded_params, params, missing_regex=".*(lora|wavelet_flow_head).*")
 
 
 @dataclasses.dataclass(frozen=True)

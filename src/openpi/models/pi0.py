@@ -9,6 +9,7 @@ from typing_extensions import override
 
 from openpi.models import model as _model
 from openpi.models import pi0_config
+from openpi.models import wavelet_flow_head as _wavelet_flow_head
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
@@ -67,6 +68,20 @@ class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
+        self.use_wavelet_flow_head = config.use_wavelet_flow_head
+        self.wavelet_flow_mode = config.wavelet_flow_mode
+        self.wavelet_levels = config.wavelet_levels
+        self.lambda_wavelet_flow_loss = config.lambda_wavelet_flow_loss
+        self.lambda_wavelet_sparse_gate = config.lambda_wavelet_sparse_gate
+        self.lambda_wavelet_gate_supervision = config.lambda_wavelet_gate_supervision
+        self.wavelet_use_gripper_transition_label = config.wavelet_use_gripper_transition_label
+        self.wavelet_gripper_action_index = config.wavelet_gripper_action_index
+        if self.use_wavelet_flow_head and self.wavelet_flow_mode != "replace":
+            raise ValueError(f"Only wavelet_flow_mode='replace' is supported, got {self.wavelet_flow_mode!r}")
+        if self.use_wavelet_flow_head and not self.pi05:
+            logger.warning(
+                "Wavelet flow head is primarily intended for pi0.5; continuing because the token path is compatible."
+            )
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -98,6 +113,16 @@ class Pi0(_model.BaseModel):
             self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
             self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
+        self.wavelet_flow_head = None
+        if self.use_wavelet_flow_head:
+            self.wavelet_flow_head = _wavelet_flow_head.WaveletSubbandFlowHead(
+                action_dim=config.action_dim,
+                token_dim=action_expert_config.width,
+                levels=config.wavelet_levels,
+                bottleneck_dim=config.wavelet_flow_bottleneck_dim,
+                use_band_gate=config.wavelet_use_band_gate,
+                rngs=rngs,
+            )
 
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
@@ -185,10 +210,90 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask, adarms_cond
 
+    def _predict_action_velocity(
+        self,
+        noisy_actions: _model.Actions,
+        action_token_outputs: at.Float[at.Array, "b ah emb"],
+    ) -> tuple[_model.Actions, dict | None]:
+        if not self.use_wavelet_flow_head:
+            return self.action_out_proj(action_token_outputs), None
+        if self.wavelet_flow_head is None:
+            raise ValueError("use_wavelet_flow_head=True but wavelet_flow_head was not initialized")
+        # replace 模式：不计算 base velocity，不做 residual/fusion，最终 v_t 完全来自小波子带 head。
+        return self.wavelet_flow_head(noisy_actions, action_token_outputs)
+
+    def _wavelet_flow_loss(
+        self,
+        u_t: _model.Actions,
+        wavelet_info: dict | None,
+    ) -> at.Float[at.Array, ""]:
+        if wavelet_info is None:
+            return jnp.asarray(0.0, dtype=u_t.dtype)
+        actual_levels = int(wavelet_info["wavelet_levels"])
+        u_approx, u_details, _ = _wavelet_flow_head.multi_level_haar_dwt(u_t, actual_levels)
+        loss = jnp.mean(jnp.square(wavelet_info["wavelet_flow_approx"] - u_approx))
+        for v_detail, u_detail in zip(wavelet_info["wavelet_flow_details"], u_details, strict=True):
+            loss = loss + jnp.mean(jnp.square(v_detail - u_detail))
+        return loss
+
+    def _wavelet_sparse_gate_loss(self, wavelet_info: dict | None) -> at.Float[at.Array, ""]:
+        if wavelet_info is None or wavelet_info.get("wavelet_gates") is None:
+            return jnp.asarray(0.0)
+        return jnp.mean(wavelet_info["wavelet_gates"])
+
+    def _normalize_wavelet_gate_label(self, label: at.Array, gates: at.Array) -> at.Array:
+        num_bands = gates.shape[1]
+        if label.ndim == 1:
+            return jnp.broadcast_to(label[:, None], gates.shape)
+        if label.ndim == 2 and label.shape[1] == 1:
+            return jnp.broadcast_to(label, gates.shape)
+        if label.ndim == 2 and label.shape[1] == num_bands:
+            return label
+        if label.ndim == 2:
+            # [B, T] 的 informative frame score 第一版先做全局 max，再广播到所有 bands。
+            score = jnp.max(label, axis=1, keepdims=True)
+            return jnp.broadcast_to(score, gates.shape)
+        return jnp.zeros_like(gates)
+
+    def _wavelet_gate_supervision_loss(
+        self, actions: _model.Actions, wavelet_info: dict | None, extras: dict | None = None
+    ) -> at.Float[at.Array, ""]:
+        if wavelet_info is None or wavelet_info.get("wavelet_gates") is None:
+            return jnp.asarray(0.0, dtype=actions.dtype)
+
+        gates = wavelet_info["wavelet_gates"]
+        labels = None
+        if extras is not None:
+            for key in ("wavelet_gate_label", "frameskip_chunk_label", "frameskip_score"):
+                if key in extras:
+                    labels = self._normalize_wavelet_gate_label(jnp.asarray(extras[key], dtype=gates.dtype), gates)
+                    break
+
+        if self.wavelet_use_gripper_transition_label and self.wavelet_gripper_action_index is not None:
+            gripper_index = self.wavelet_gripper_action_index
+            if 0 <= gripper_index < actions.shape[-1] and gates.shape[1] >= 2:
+                gripper = actions[..., gripper_index]
+                transition = jnp.abs(gripper[:, 1:] - gripper[:, :-1])
+                score = jnp.max(transition, axis=1)
+                score = score / (jnp.max(score) + 1e-6)
+                gripper_labels = jnp.zeros_like(gates).at[:, 1].set(score)
+                labels = gripper_labels if labels is None else jnp.clip(0.5 * labels + 0.5 * gripper_labels, 0.0, 1.0)
+
+        if labels is None:
+            return jnp.asarray(0.0, dtype=actions.dtype)
+        return jnp.mean(jnp.square(gates - labels))
+
     @override
     def compute_loss(
-        self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
-    ) -> at.Float[at.Array, "*b ah"]:
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        actions: _model.Actions,
+        *,
+        train: bool = False,
+        return_metrics: bool = False,
+        extras: dict | None = None,
+    ) -> at.Float[at.Array, "*b ah"] | tuple[at.Float[at.Array, "*b ah"], dict[str, at.Array]]:
         preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
 
@@ -209,9 +314,35 @@ class Pi0(_model.BaseModel):
         (prefix_out, suffix_out), _ = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
         )
-        v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        del prefix_out
+        action_token_outputs = suffix_out[:, -self.action_horizon :]
+        v_t, wavelet_info = self._predict_action_velocity(x_t, action_token_outputs)
 
-        return jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        loss_action = jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        loss = loss_action
+        metrics: dict[str, at.Array] = {}
+        if self.use_wavelet_flow_head:
+            loss_wavelet = self._wavelet_flow_loss(u_t, wavelet_info)
+            loss_sparse_gate = self._wavelet_sparse_gate_loss(wavelet_info)
+            loss_gate_supervision = self._wavelet_gate_supervision_loss(actions, wavelet_info, extras)
+            loss = (
+                loss
+                + self.lambda_wavelet_flow_loss * loss_wavelet
+                + self.lambda_wavelet_sparse_gate * loss_sparse_gate
+                + self.lambda_wavelet_gate_supervision * loss_gate_supervision
+            )
+            metrics = {
+                "loss_action_flow": jnp.mean(loss_action),
+                "loss_wavelet_flow": loss_wavelet,
+                "loss_wavelet_sparse_gate": loss_sparse_gate,
+                "loss_wavelet_gate_supervision": loss_gate_supervision,
+            }
+            if wavelet_info is not None and wavelet_info.get("wavelet_gate_mean") is not None:
+                metrics["wavelet_gate_mean"] = wavelet_info["wavelet_gate_mean"]
+
+        if return_metrics:
+            return loss, metrics
+        return loss
 
     @override
     def sample_actions(
@@ -266,7 +397,8 @@ class Pi0(_model.BaseModel):
                 adarms_cond=[None, adarms_cond],
             )
             assert prefix_out is None
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            action_token_outputs = suffix_out[:, -self.action_horizon :]
+            v_t, _ = self._predict_action_velocity(x_t, action_token_outputs)
 
             return x_t + dt * v_t, time + dt
 

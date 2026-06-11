@@ -34,6 +34,19 @@ class Pi0Config(_model.BaseModelConfig):
 
     pytorch_compile_mode: str | None = "max-autotune"
 
+    # Wavelet Subband Flow Head 默认关闭；关闭时保持原始 action_out_proj 行为。
+    use_wavelet_flow_head: bool = False
+    wavelet_flow_mode: str = "replace"
+    wavelet_levels: int = 3
+    wavelet_flow_bottleneck_dim: int = 128
+    wavelet_use_band_gate: bool = False
+    lambda_wavelet_flow_loss: float = 0.1
+    lambda_wavelet_recon_loss: float = 0.0
+    lambda_wavelet_sparse_gate: float = 0.0
+    lambda_wavelet_gate_supervision: float = 0.0
+    wavelet_use_gripper_transition_label: bool = False
+    wavelet_gripper_action_index: int | None = None
+
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)

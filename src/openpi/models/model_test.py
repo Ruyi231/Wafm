@@ -19,8 +19,33 @@ def test_pi0_model():
 
     loss = nnx_utils.module_jit(model.compute_loss)(key, obs, act)
     assert loss.shape == (batch_size, config.action_horizon)
+    assert not model.use_wavelet_flow_head
+    assert model.wavelet_flow_head is None
 
     actions = nnx_utils.module_jit(model.sample_actions)(key, obs, num_steps=10)
+    assert actions.shape == (batch_size, model.action_horizon, model.action_dim)
+
+
+def test_pi05_wavelet_flow_model():
+    key = jax.random.key(0)
+    config = pi0_config.Pi0Config(
+        pi05=True,
+        action_horizon=10,
+        use_wavelet_flow_head=True,
+        wavelet_levels=2,
+        wavelet_flow_bottleneck_dim=16,
+    )
+    model = config.create(key)
+
+    batch_size = 2
+    obs, act = config.fake_obs(batch_size), config.fake_act(batch_size)
+
+    loss, metrics = nnx_utils.module_jit(model.compute_loss)(key, obs, act, return_metrics=True)
+    assert loss.shape == (batch_size, config.action_horizon)
+    assert "loss_action_flow" in metrics
+    assert "loss_wavelet_flow" in metrics
+
+    actions = nnx_utils.module_jit(model.sample_actions)(key, obs, num_steps=2)
     assert actions.shape == (batch_size, model.action_horizon, model.action_dim)
 
 
