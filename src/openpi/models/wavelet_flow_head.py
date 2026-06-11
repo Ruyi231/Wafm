@@ -2,11 +2,12 @@ from collections.abc import Sequence
 
 import flax.nnx as nnx
 import jax.numpy as jnp
-
+import math
 from openpi.shared import array_typing as at
 
 
-_SQRT2 = jnp.sqrt(jnp.asarray(2.0, dtype=jnp.float32))
+# _SQRT2 = jnp.sqrt(jnp.asarray(2.0, dtype=jnp.float32))
+_SQRT2 = math.sqrt(2.0)
 
 
 def _pad_time_to_even(x: at.Array) -> at.Array:
