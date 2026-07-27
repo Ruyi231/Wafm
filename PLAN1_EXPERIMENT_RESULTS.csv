@@ -1,0 +1,12 @@
+stage,experiment_id,mode,wavelet_flow_impl,normalization,hierarchical_coupling,conditioning_mode,wavelet_levels,dataset,task,seed,num_steps,success_rate,action_endpoint_error,jerk,gripper_timing_error,loss_band_A,loss_band_D1,loss_band_D2,loss_band_D3,action_idwt_mse,inference_ms,status,notes
+correctness,synthetic_overfit_l2_seed0,nh_wafm,subband_flow,true,true,temporal_pooling,2,synthetic,fixed_head_batch,0,,,,,,0.0065622544,0.0284777191,0.0035664537,,0.0056586955,,passed,"400-step head-level stop-loss gate; initial total band loss 2.4937431812, final 0.0128688095"
+stage1,pi05_baseline,pi05,none,false,false,none,,pending,pending,,,,,,,,,,,,,not_run,Requires benchmark dataset checkpoints and accelerator
+stage1,legacy_wafm,legacy_wafm,legacy_head,false,false,legacy_dwt_tokens,3,pending,pending,,,,,,,,,,,,,not_run,Requires benchmark dataset checkpoints and accelerator
+stage1,subband_no_norm,nh_wafm,subband_flow,false,false,temporal_pooling,2,pending,pending,,,,,,,,,,,,,not_run,Requires benchmark dataset checkpoints and accelerator
+stage1,subband_norm,nh_wafm,subband_flow,true,false,temporal_pooling,2,pending,pending,,,,,,,,,,,,,not_run,Requires dataset-specific wavelet statistics checkpoints and accelerator
+stage2,independent_bands,nh_wafm,subband_flow,true,false,temporal_pooling,2,pending,pending,,,,,,,,,,,,,not_run,Requires dataset-specific wavelet statistics checkpoints and accelerator
+stage2,hierarchical_bands,nh_wafm,subband_flow,true,true,temporal_pooling,2,pending,pending,,,,,,,,,,,,,not_run,Requires dataset-specific wavelet statistics checkpoints and accelerator
+stage2,hierarchical_band_query,nh_wafm,subband_flow,true,true,band_query,2,pending,pending,,,,,,,,,,,,,not_run,Requires dataset-specific wavelet statistics checkpoints and accelerator
+stage3,wavelet_level_1,nh_wafm,subband_flow,true,true,temporal_pooling,1,pending,pending,,,,,,,,,,,,,not_run,Requires dataset-specific wavelet statistics checkpoints and accelerator
+stage3,wavelet_level_2,nh_wafm,subband_flow,true,true,temporal_pooling,2,pending,pending,,,,,,,,,,,,,not_run,Requires dataset-specific wavelet statistics checkpoints and accelerator
+stage3,wavelet_level_3,nh_wafm,subband_flow,true,true,temporal_pooling,3,pending,pending,,,,,,,,,,,,,not_run,Requires dataset-specific wavelet statistics checkpoints and accelerator

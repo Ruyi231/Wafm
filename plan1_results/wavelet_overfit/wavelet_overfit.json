@@ -1,0 +1,88 @@
+{
+  "config": {
+    "action_dim": 3,
+    "action_horizon": 16,
+    "batch_size": 8,
+    "bottleneck_dim": 48,
+    "conditioning_mode": "temporal_pooling",
+    "detach_coarse_condition": false,
+    "hierarchical_coupling": true,
+    "learning_rate": 0.003,
+    "levels": 2,
+    "log_interval": 100,
+    "max_final_ratio": 0.5,
+    "norm_eps": 1e-06,
+    "output_dir": "plan1_results\\wavelet_overfit",
+    "platform": "cpu",
+    "require_improvement": true,
+    "seed": 0,
+    "steps": 400,
+    "token_dim": 12
+  },
+  "criterion": "all band losses and action_idwt_mse final/initial <= 0.5",
+  "final": {
+    "action_idwt_mse": 0.005658695474267006,
+    "loss_band_A": 0.006562254391610622,
+    "loss_band_D1": 0.02847771905362606,
+    "loss_band_D2": 0.0035664536990225315,
+    "loss_total": 0.012868809513747692,
+    "step": 400
+  },
+  "final_to_initial_ratio": {
+    "action_idwt_mse": 0.00448396559976513,
+    "loss_band_A": 0.0024295525488989547,
+    "loss_band_D1": 0.010958156340286466,
+    "loss_band_D2": 0.0016349029067474815
+  },
+  "history": [
+    {
+      "action_idwt_mse": 1.2619845867156982,
+      "loss_band_A": 2.7010135650634766,
+      "loss_band_D1": 2.598769187927246,
+      "loss_band_D2": 2.1814467906951904,
+      "loss_total": 2.4937431812286377,
+      "step": 0
+    },
+    {
+      "action_idwt_mse": 0.4957094192504883,
+      "loss_band_A": 1.0845324993133545,
+      "loss_band_D1": 0.7639390826225281,
+      "loss_band_D2": 0.8742007613182068,
+      "loss_total": 0.907557487487793,
+      "step": 100
+    },
+    {
+      "action_idwt_mse": 0.1425313949584961,
+      "loss_band_A": 0.29938575625419617,
+      "loss_band_D1": 0.33118733763694763,
+      "loss_band_D2": 0.18623241782188416,
+      "loss_total": 0.27226850390434265,
+      "step": 200
+    },
+    {
+      "action_idwt_mse": 0.033575743436813354,
+      "loss_band_A": 0.05740208551287651,
+      "loss_band_D1": 0.11875925958156586,
+      "loss_band_D2": 0.02806052379310131,
+      "loss_total": 0.06807395815849304,
+      "step": 300
+    },
+    {
+      "action_idwt_mse": 0.005658695474267006,
+      "loss_band_A": 0.006562254391610622,
+      "loss_band_D1": 0.02847771905362606,
+      "loss_band_D2": 0.0035664536990225315,
+      "loss_total": 0.012868809513747692,
+      "step": 400
+    }
+  ],
+  "initial": {
+    "action_idwt_mse": 1.2619845867156982,
+    "loss_band_A": 2.7010135650634766,
+    "loss_band_D1": 2.598769187927246,
+    "loss_band_D2": 2.1814467906951904,
+    "loss_total": 2.4937431812286377,
+    "step": 0
+  },
+  "status": "passed"
+}
