@@ -1,0 +1,276 @@
+{
+  "schema_version": 1,
+  "name": "plan1_nh_wafm_experiment_manifest",
+  "description": "Plan 1 的可审计实验参数矩阵。该 JSON 当前不由 OpenPI Tyro 配置系统自动读取；真实训练前必须把选定条目注册为命名 TrainConfig，并在训练与评测时使用同一配置名。",
+  "runtime_integration": {
+    "consumed_by_training_cli": false,
+    "registered_smoke_config": "debug_nh_wafm",
+    "portable_original_config": "pi05_libero",
+    "registered_legacy_reference": "libero_full_wafm_l2_nogate_loss",
+    "require_named_config_for_checkpoint_evaluation": true
+  },
+  "common_nh_wafm_model_overrides": {
+    "use_wavelet_flow_head": true,
+    "wavelet_flow_impl": "subband_flow",
+    "wavelet_flow_mode": "replace",
+    "wavelet_flow_bottleneck_dim": 128,
+    "wavelet_band_norm_eps": 1e-06,
+    "wavelet_norm_stats_fallback": "error",
+    "wavelet_shared_noise": false,
+    "wavelet_band_loss_weights": null,
+    "wavelet_detach_coarse_condition": false,
+    "wavelet_use_action_reconstruction_loss": false,
+    "lambda_wavelet_recon_loss": 0.0,
+    "wavelet_use_cross_band_consistency": false,
+    "wavelet_cross_band_consistency_weight": 0.0,
+    "wavelet_use_band_gate": false,
+    "lambda_wavelet_sparse_gate": 0.0,
+    "lambda_wavelet_gate_supervision": 0.0
+  },
+  "validation_gate": {
+    "experiment_id": "synthetic_head_overfit_seed0",
+    "status": "passed",
+    "steps": 400,
+    "seed": 0,
+    "levels": 2,
+    "conditioning_mode": "temporal_pooling",
+    "hierarchical_coupling": true,
+    "initial_loss_total": 2.4937431812286377,
+    "final_loss_total": 0.012868809513747692,
+    "initial_action_idwt_mse": 1.2619845867156982,
+    "final_action_idwt_mse": 0.005658695474267006,
+    "result_file": "plan1_results/wavelet_overfit/wavelet_overfit.json",
+    "scope": "仅固定合成批次上的 NormalizedHierarchicalWaveletFlowHead，不代表端到端 Pi0 或机器人任务结果"
+  },
+  "execution_order": [
+    "p1_pi05_baseline",
+    "p1_legacy_wafm",
+    "p1_subband_no_norm",
+    "p1_subband_with_norm",
+    "p2_independent_bands",
+    "p2_hierarchical_bands",
+    "p2_hierarchical_band_query",
+    "p3_level1",
+    "p3_level2",
+    "p3_level3"
+  ],
+  "stages": [
+    {
+      "stage": 1,
+      "name": "correctness",
+      "experiments": [
+        {
+          "experiment_id": "p1_pi05_baseline",
+          "base_train_config": "pi05_libero",
+          "registered": true,
+          "status": "not_run_in_plan1_delivery",
+          "model_overrides": {
+            "use_wavelet_flow_head": false
+          }
+        },
+        {
+          "experiment_id": "p1_legacy_wafm",
+          "base_train_config": "pi05_libero",
+          "registered": false,
+          "legacy_reference_config": "libero_full_wafm_l2_nogate_loss",
+          "status": "not_run_in_plan1_delivery",
+          "model_overrides": {
+            "use_wavelet_flow_head": true,
+            "wavelet_flow_impl": "legacy_head",
+            "wavelet_levels": 2,
+            "wavelet_use_band_gate": false,
+            "lambda_wavelet_sparse_gate": 0.0,
+            "lambda_wavelet_gate_supervision": 0.0
+          }
+        },
+        {
+          "experiment_id": "p1_subband_no_norm",
+          "base_train_config": "pi05_libero",
+          "registered": false,
+          "status": "not_run_in_plan1_delivery",
+          "model_overrides": {
+            "wavelet_levels": 2,
+            "wavelet_band_normalization": false,
+            "wavelet_norm_stats_path": null,
+            "wavelet_hierarchical_coupling": false,
+            "wavelet_conditioning_mode": "temporal_pooling"
+          }
+        },
+        {
+          "experiment_id": "p1_subband_with_norm",
+          "base_train_config": "pi05_libero",
+          "registered": false,
+          "status": "not_run_in_plan1_delivery",
+          "requires_wavelet_norm_stats": true,
+          "model_overrides": {
+            "wavelet_levels": 2,
+            "wavelet_band_normalization": true,
+            "wavelet_norm_stats_path": "<required: dataset-specific wavelet_norm_stats_l2.json>",
+            "wavelet_hierarchical_coupling": false,
+            "wavelet_conditioning_mode": "temporal_pooling"
+          }
+        }
+      ]
+    },
+    {
+      "stage": 2,
+      "name": "structure",
+      "experiments": [
+        {
+          "experiment_id": "p2_independent_bands",
+          "base_train_config": "pi05_libero",
+          "registered": false,
+          "status": "not_run_in_plan1_delivery",
+          "requires_wavelet_norm_stats": true,
+          "model_overrides": {
+            "wavelet_levels": 2,
+            "wavelet_band_normalization": true,
+            "wavelet_norm_stats_path": "<required: dataset-specific wavelet_norm_stats_l2.json>",
+            "wavelet_hierarchical_coupling": false,
+            "wavelet_detach_coarse_condition": false,
+            "wavelet_conditioning_mode": "temporal_pooling"
+          }
+        },
+        {
+          "experiment_id": "p2_hierarchical_bands",
+          "base_train_config": "pi05_libero",
+          "registered": false,
+          "status": "not_run_in_plan1_delivery",
+          "requires_wavelet_norm_stats": true,
+          "model_overrides": {
+            "wavelet_levels": 2,
+            "wavelet_band_normalization": true,
+            "wavelet_norm_stats_path": "<required: dataset-specific wavelet_norm_stats_l2.json>",
+            "wavelet_hierarchical_coupling": true,
+            "wavelet_detach_coarse_condition": false,
+            "wavelet_conditioning_mode": "temporal_pooling"
+          }
+        },
+        {
+          "experiment_id": "p2_hierarchical_band_query",
+          "base_train_config": "pi05_libero",
+          "registered": false,
+          "status": "not_run_in_plan1_delivery",
+          "requires_wavelet_norm_stats": true,
+          "model_overrides": {
+            "wavelet_levels": 2,
+            "wavelet_band_normalization": true,
+            "wavelet_norm_stats_path": "<required: dataset-specific wavelet_norm_stats_l2.json>",
+            "wavelet_hierarchical_coupling": true,
+            "wavelet_detach_coarse_condition": false,
+            "wavelet_conditioning_mode": "band_query"
+          }
+        }
+      ],
+      "supported_secondary_ablation": {
+        "experiment_id": "p2_hierarchical_detached",
+        "insert_after": "p2_hierarchical_bands",
+        "model_overrides": {
+          "wavelet_hierarchical_coupling": true,
+          "wavelet_detach_coarse_condition": true,
+          "wavelet_conditioning_mode": "temporal_pooling"
+        }
+      },
+      "supported_noise_ablation": {
+        "experiment_id": "p2_shared_action_noise",
+        "canonical_value": false,
+        "ablation_value": true,
+        "model_overrides": {
+          "wavelet_shared_noise": true
+        },
+        "meaning": "在 padded action horizon 采样一个物理动作域高斯张量，Haar DWT 后再用同一 band stats 映射到标准化子带坐标"
+      }
+    },
+    {
+      "stage": 3,
+      "name": "levels",
+      "experiments": [
+        {
+          "experiment_id": "p3_level1",
+          "base_train_config": "pi05_libero",
+          "registered": false,
+          "status": "not_run_in_plan1_delivery",
+          "requires_wavelet_norm_stats": true,
+          "model_overrides": {
+            "wavelet_levels": 1,
+            "wavelet_band_normalization": true,
+            "wavelet_norm_stats_path": "<required: dataset-specific wavelet_norm_stats_l1.json>",
+            "wavelet_hierarchical_coupling": true,
+            "wavelet_conditioning_mode": "temporal_pooling"
+          }
+        },
+        {
+          "experiment_id": "p3_level2",
+          "base_train_config": "pi05_libero",
+          "registered": false,
+          "status": "not_run_in_plan1_delivery",
+          "requires_wavelet_norm_stats": true,
+          "model_overrides": {
+            "wavelet_levels": 2,
+            "wavelet_band_normalization": true,
+            "wavelet_norm_stats_path": "<required: dataset-specific wavelet_norm_stats_l2.json>",
+            "wavelet_hierarchical_coupling": true,
+            "wavelet_conditioning_mode": "temporal_pooling"
+          }
+        },
+        {
+          "experiment_id": "p3_level3",
+          "base_train_config": "pi05_libero",
+          "registered": false,
+          "status": "not_run_in_plan1_delivery",
+          "requires_wavelet_norm_stats": true,
+          "model_overrides": {
+            "wavelet_levels": 3,
+            "wavelet_band_normalization": true,
+            "wavelet_norm_stats_path": "<required: dataset-specific wavelet_norm_stats_l3.json>",
+            "wavelet_hierarchical_coupling": true,
+            "wavelet_conditioning_mode": "temporal_pooling"
+          }
+        }
+      ]
+    },
+    {
+      "stage": 4,
+      "name": "full_benchmarks",
+      "status": "not_run_in_plan1_delivery",
+      "benchmarks": [
+        {
+          "dataset": "LIBERO",
+          "driver_available": true,
+          "required_metrics": [
+            "success_rate",
+            "action_endpoint_error",
+            "jerk",
+            "gripper_timing_error",
+            "per_band_prediction_error",
+            "seed_confidence_interval"
+          ]
+        },
+        {
+          "dataset": "CALVIN single-task",
+          "driver_available": false,
+          "required_metrics": [
+            "success_rate",
+            "action_endpoint_error",
+            "jerk",
+            "gripper_timing_error",
+            "per_band_prediction_error",
+            "seed_confidence_interval"
+          ]
+        },
+        {
+          "dataset": "RoboTwin or precise real-world task",
+          "driver_available": false,
+          "required_metrics": [
+            "success_rate",
+            "action_endpoint_error",
+            "jerk",
+            "gripper_timing_error",
+            "per_band_prediction_error",
+            "seed_confidence_interval"
+          ]
+        }
+      ]
+    }
+  ]
+}
