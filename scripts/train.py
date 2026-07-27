@@ -199,6 +199,18 @@ def train_step(
         "param_norm": optax.global_norm(kernel_params),
         **loss_metrics,
     }
+    if (
+        getattr(config.model, "use_wavelet_flow_head", False)
+        and getattr(config.model, "wavelet_flow_impl", "legacy_head") == "subband_flow"
+    ):
+        approx_grads = grads.filter(nnx_utils.PathRegex(".*wavelet_flow_head/approx_head/.*"))
+        info["gradient_norm_each_band_head_A"] = optax.global_norm(approx_grads)
+        requested_levels = getattr(config.model, "wavelet_levels", 0)
+        action_horizon = getattr(config.model, "action_horizon", 0)
+        effective_levels = min(requested_levels, max(0, (action_horizon - 1).bit_length()))
+        for level in range(effective_levels, 0, -1):
+            detail_grads = grads.filter(nnx_utils.PathRegex(f".*wavelet_flow_head/detail_heads/D{level}/.*"))
+            info[f"gradient_norm_each_band_head_D{level}"] = optax.global_norm(detail_grads)
     return new_state, info
 
 

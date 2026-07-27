@@ -30,6 +30,11 @@ def test_wavelet_norm_roundtrip(tmp_path):
     assert actual_levels == 3
     assert stats.means.shape == (actual_levels + 1, actions.shape[-1])
     assert stats.stds.shape == (actual_levels + 1, actions.shape[-1])
+    direct_bands = (np.asarray(approx), *(np.asarray(detail) for detail in details))
+    direct_means = np.stack([band.mean(axis=(0, 1)) for band in direct_bands])
+    direct_stds = np.stack([band.std(axis=(0, 1)) for band in direct_bands])
+    np.testing.assert_allclose(stats.means, direct_means, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(stats.stds, direct_stds, rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(restored_approx, approx, rtol=1e-5, atol=1e-5)
     for restored_detail, detail in zip(restored_details, details, strict=True):
         np.testing.assert_allclose(restored_detail, detail, rtol=1e-5, atol=1e-5)

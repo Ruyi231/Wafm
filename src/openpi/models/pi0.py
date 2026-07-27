@@ -10,6 +10,7 @@ from typing_extensions import override
 from openpi.models import model as _model
 from openpi.models import pi0_config
 from openpi.models import wavelet_flow_head as _wavelet_flow_head
+from openpi.models import wavelet_normalization as _wavelet_normalization
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
@@ -70,13 +71,26 @@ class Pi0(_model.BaseModel):
         self.pi05 = config.pi05
         self.use_wavelet_flow_head = config.use_wavelet_flow_head
         self.wavelet_flow_mode = config.wavelet_flow_mode
+        self.wavelet_flow_impl = config.wavelet_flow_impl
         self.wavelet_levels = config.wavelet_levels
         self.lambda_wavelet_flow_loss = config.lambda_wavelet_flow_loss
+        self.lambda_wavelet_recon_loss = config.lambda_wavelet_recon_loss
         self.lambda_wavelet_sparse_gate = config.lambda_wavelet_sparse_gate
         self.lambda_wavelet_gate_supervision = config.lambda_wavelet_gate_supervision
         self.wavelet_use_gripper_transition_label = config.wavelet_use_gripper_transition_label
         self.wavelet_gripper_action_index = config.wavelet_gripper_action_index
-        if self.use_wavelet_flow_head and self.wavelet_flow_mode != "replace":
+        self.wavelet_band_normalization = config.wavelet_band_normalization
+        self.wavelet_band_norm_eps = config.wavelet_band_norm_eps
+        self.wavelet_shared_noise = config.wavelet_shared_noise
+        self.wavelet_band_loss_weights = config.wavelet_band_loss_weights
+        self.wavelet_use_action_reconstruction_loss = config.wavelet_use_action_reconstruction_loss
+        self.wavelet_use_cross_band_consistency = config.wavelet_use_cross_band_consistency
+        self.wavelet_cross_band_consistency_weight = config.wavelet_cross_band_consistency_weight
+        if (
+            self.use_wavelet_flow_head
+            and self.wavelet_flow_impl == "legacy_head"
+            and self.wavelet_flow_mode != "replace"
+        ):
             raise ValueError(f"Only wavelet_flow_mode='replace' is supported, got {self.wavelet_flow_mode!r}")
         if self.use_wavelet_flow_head and not self.pi05:
             logger.warning(
@@ -115,17 +129,68 @@ class Pi0(_model.BaseModel):
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
         self.wavelet_flow_head = None
         if self.use_wavelet_flow_head:
-            self.wavelet_flow_head = _wavelet_flow_head.WaveletSubbandFlowHead(
-                action_dim=config.action_dim,
-                token_dim=action_expert_config.width,
-                levels=config.wavelet_levels,
-                bottleneck_dim=config.wavelet_flow_bottleneck_dim,
-                use_band_gate=config.wavelet_use_band_gate,
-                rngs=rngs,
-            )
+            if self.wavelet_flow_impl == "legacy_head":
+                self.wavelet_flow_head = _wavelet_flow_head.WaveletSubbandFlowHead(
+                    action_dim=config.action_dim,
+                    token_dim=action_expert_config.width,
+                    levels=config.wavelet_levels,
+                    bottleneck_dim=config.wavelet_flow_bottleneck_dim,
+                    use_band_gate=config.wavelet_use_band_gate,
+                    rngs=rngs,
+                )
+            else:
+                effective_levels, _, _, _ = _wavelet_flow_head.wavelet_layout(
+                    config.action_horizon, config.wavelet_levels
+                )
+                stats = self._load_wavelet_norm_stats(config)
+                self.wavelet_flow_head = _wavelet_flow_head.NormalizedHierarchicalWaveletFlowHead(
+                    action_dim=config.action_dim,
+                    token_dim=action_expert_config.width,
+                    action_horizon=config.action_horizon,
+                    levels=effective_levels,
+                    bottleneck_dim=config.wavelet_flow_bottleneck_dim,
+                    hierarchical_coupling=config.wavelet_hierarchical_coupling,
+                    detach_coarse_condition=config.wavelet_detach_coarse_condition,
+                    conditioning_mode=config.wavelet_conditioning_mode,
+                    band_means=stats.means,
+                    band_stds=stats.stds,
+                    norm_eps=0.0 if stats.is_identity else stats.eps,
+                    rngs=rngs,
+                )
 
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
+
+    def _load_wavelet_norm_stats(self, config: pi0_config.Pi0Config) -> _wavelet_normalization.WaveletNormStats:
+        if not config.wavelet_band_normalization:
+            return _wavelet_normalization.identity_wavelet_norm_stats(
+                config.wavelet_levels,
+                config.action_dim,
+                config.wavelet_band_norm_eps,
+                action_horizon=config.action_horizon,
+            )
+        if config.wavelet_norm_stats_path is None:
+            if config.wavelet_norm_stats_fallback == "error":
+                raise ValueError(
+                    "wavelet_band_normalization=True requires wavelet_norm_stats_path. "
+                    "Run scripts/compute_wavelet_norm_stats.py or explicitly set "
+                    "wavelet_norm_stats_fallback='identity' for an ablation."
+                )
+            logger.warning("NH-WaFM band normalization requested without statistics; using explicit identity fallback.")
+            return _wavelet_normalization.identity_wavelet_norm_stats(
+                config.wavelet_levels,
+                config.action_dim,
+                config.wavelet_band_norm_eps,
+                action_horizon=config.action_horizon,
+            )
+        return _wavelet_normalization.load_wavelet_norm_stats(
+            config.wavelet_norm_stats_path,
+            expected_levels=config.wavelet_levels,
+            expected_action_dim=config.action_dim,
+            expected_action_horizon=config.action_horizon,
+            eps=config.wavelet_band_norm_eps,
+            allow_identity_fallback=config.wavelet_norm_stats_fallback == "identity",
+        )
 
     @at.typecheck
     def embed_prefix(
@@ -217,10 +282,170 @@ class Pi0(_model.BaseModel):
     ) -> tuple[_model.Actions, dict | None]:
         if not self.use_wavelet_flow_head:
             return self.action_out_proj(action_token_outputs), None
+        if self.wavelet_flow_impl == "subband_flow":
+            raise ValueError("subband_flow predicts normalized band velocities through _predict_subband_velocity")
         if self.wavelet_flow_head is None:
             raise ValueError("use_wavelet_flow_head=True but wavelet_flow_head was not initialized")
-        # replace 模式：不计算 base velocity，不做 residual/fusion，最终 v_t 完全来自小波子带 head。
+        # Legacy replace mode gets the full action velocity from the wavelet head.
         return self.wavelet_flow_head(noisy_actions, action_token_outputs)
+
+    def _subband_head(self) -> _wavelet_flow_head.NormalizedHierarchicalWaveletFlowHead:
+        if not isinstance(
+            self.wavelet_flow_head,
+            _wavelet_flow_head.NormalizedHierarchicalWaveletFlowHead,
+        ):
+            raise ValueError("wavelet_flow_impl='subband_flow' requires the normalized hierarchical head")
+        return self.wavelet_flow_head
+
+    def _sample_subband_noise(
+        self,
+        rng: at.KeyArrayLike,
+        actions: _model.Actions,
+    ) -> tuple[at.Array, tuple[at.Array, ...]]:
+        head = self._subband_head()
+        if self.wavelet_shared_noise:
+            # Sampling on the padded horizon keeps the orthonormal Haar
+            # coefficients Gaussian even when action_horizon is not a 2**L
+            # multiple. Cropping the inverse transform recovers the first
+            # action_horizon samples exactly.
+            action_noise = jax.random.normal(
+                rng,
+                (actions.shape[0], head.padded_horizon, actions.shape[-1]),
+                dtype=actions.dtype,
+            )
+            approx, details, actual_levels = _wavelet_flow_head.multi_level_haar_dwt(action_noise, head.levels)
+            if actual_levels != head.levels:
+                raise AssertionError(f"Expected {head.levels} DWT levels, got {actual_levels}")
+            # This branch preserves one action-domain Gaussian draw shared by
+            # all bands. Its DWT coefficients are physical states, so they
+            # must enter the same normalized coordinates as the data bands.
+            return head.normalize_bands(approx, tuple(details))
+
+        keys = jax.random.split(rng, head.levels + 1)
+        approx = jax.random.normal(
+            keys[0],
+            (actions.shape[0], head.approx_length, actions.shape[-1]),
+            dtype=actions.dtype,
+        )
+        details = tuple(
+            jax.random.normal(
+                keys[level],
+                (actions.shape[0], head.detail_lengths[level - 1], actions.shape[-1]),
+                dtype=actions.dtype,
+            )
+            for level in range(1, head.levels + 1)
+        )
+        return approx, details
+
+    def _subband_state_to_actions(
+        self,
+        normalized_approx: at.Array,
+        normalized_details: tuple[at.Array, ...],
+    ) -> _model.Actions:
+        head = self._subband_head()
+        approx, details = head.denormalize_state_bands(normalized_approx, normalized_details)
+        return _wavelet_flow_head.multi_level_haar_idwt(approx, details, target_length=self.action_horizon)
+
+    def _subband_velocity_to_actions(
+        self,
+        normalized_approx_velocity: at.Array,
+        normalized_detail_velocities: tuple[at.Array, ...],
+    ) -> _model.Actions:
+        head = self._subband_head()
+        approx_velocity, detail_velocities = head.denormalize_velocity_bands(
+            normalized_approx_velocity,
+            normalized_detail_velocities,
+        )
+        return _wavelet_flow_head.multi_level_haar_idwt(
+            approx_velocity,
+            detail_velocities,
+            target_length=self.action_horizon,
+        )
+
+    def _predict_subband_velocity(
+        self,
+        normalized_approx: at.Array,
+        normalized_details: tuple[at.Array, ...],
+        action_token_outputs: at.Float[at.Array, "b ah emb"],
+        timestep: at.Float[at.Array, " b"],
+    ) -> tuple[at.Array, tuple[at.Array, ...], dict[str, object]]:
+        return self._subband_head()(
+            normalized_approx,
+            normalized_details,
+            action_token_outputs,
+            timestep,
+        )
+
+    def _subband_losses(
+        self,
+        predicted_approx: at.Array,
+        predicted_details: tuple[at.Array, ...],
+        target_approx: at.Array,
+        target_details: tuple[at.Array, ...],
+    ) -> tuple[at.Array, at.Array, dict[str, at.Array]]:
+        head = self._subband_head()
+        if len(predicted_details) != head.levels or len(target_details) != head.levels:
+            raise ValueError("Subband loss received a detail tuple with the wrong static length")
+        weights = (
+            (1.0,) * (head.levels + 1) if self.wavelet_band_loss_weights is None else self.wavelet_band_loss_weights
+        )
+
+        approx_error = jnp.square(predicted_approx - target_approx)
+        per_example = weights[0] * jnp.mean(approx_error, axis=(1, 2))
+        metrics: dict[str, at.Array] = {
+            "loss_band_A": jnp.mean(approx_error),
+            "band_target_energy_A": jnp.mean(jnp.square(target_approx)),
+            "band_pred_energy_A": jnp.mean(jnp.square(predicted_approx)),
+        }
+
+        for level in range(head.levels, 0, -1):
+            predicted = predicted_details[level - 1]
+            target = target_details[level - 1]
+            error = jnp.square(predicted - target)
+            weight_index = head.levels - level + 1
+            per_example = per_example + weights[weight_index] * jnp.mean(error, axis=(1, 2))
+            metrics[f"loss_band_D{level}"] = jnp.mean(error)
+            metrics[f"band_target_energy_D{level}"] = jnp.mean(jnp.square(target))
+            metrics[f"band_pred_energy_D{level}"] = jnp.mean(jnp.square(predicted))
+
+        # Cross-band consistency is the physical (denormalized) squared-energy
+        # allocation over the orthonormal Haar coefficients. Summing rather
+        # than averaging accounts for the different coefficient counts.
+        physical_predicted_approx, physical_predicted_details = head.denormalize_velocity_bands(
+            predicted_approx,
+            predicted_details,
+        )
+        physical_target_approx, physical_target_details = head.denormalize_velocity_bands(
+            target_approx,
+            target_details,
+        )
+        predicted_energy = jnp.stack(
+            (
+                jnp.sum(jnp.square(physical_predicted_approx), axis=(1, 2)),
+                *(
+                    jnp.sum(jnp.square(physical_predicted_details[level - 1]), axis=(1, 2))
+                    for level in range(head.levels, 0, -1)
+                ),
+            ),
+            axis=-1,
+        )
+        target_energy = jnp.stack(
+            (
+                jnp.sum(jnp.square(physical_target_approx), axis=(1, 2)),
+                *(
+                    jnp.sum(jnp.square(physical_target_details[level - 1]), axis=(1, 2))
+                    for level in range(head.levels, 0, -1)
+                ),
+            ),
+            axis=-1,
+        )
+        energy_eps = jnp.asarray(1e-8, dtype=predicted_energy.dtype)
+        predicted_fraction = predicted_energy / (jnp.sum(predicted_energy, axis=-1, keepdims=True) + energy_eps)
+        target_fraction = target_energy / (jnp.sum(target_energy, axis=-1, keepdims=True) + energy_eps)
+        cross_per_example = jnp.mean(jnp.square(predicted_fraction - target_fraction), axis=-1)
+        metrics["loss_cross_band_consistency"] = jnp.mean(cross_per_example)
+        metrics["loss_band_total"] = jnp.mean(per_example)
+        return per_example, cross_per_example, metrics
 
     def _wavelet_flow_loss(
         self,
@@ -250,7 +475,7 @@ class Pi0(_model.BaseModel):
         if label.ndim == 2 and label.shape[1] == num_bands:
             return label
         if label.ndim == 2:
-            # [B, T] 的 informative frame score 第一版先做全局 max，再广播到所有 bands。
+            # Reduce an informative-frame score [B, T] globally, then broadcast to bands.
             score = jnp.max(label, axis=1, keepdims=True)
             return jnp.broadcast_to(score, gates.shape)
         return jnp.zeros_like(gates)
@@ -298,11 +523,39 @@ class Pi0(_model.BaseModel):
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
 
         batch_shape = actions.shape[:-2]
-        noise = jax.random.normal(noise_rng, actions.shape)
         time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
         time_expanded = time[..., None, None]
-        x_t = time_expanded * noise + (1 - time_expanded) * actions
-        u_t = noise - actions
+        subband_mode = self.use_wavelet_flow_head and self.wavelet_flow_impl == "subband_flow"
+        if subband_mode:
+            head = self._subband_head()
+            data_approx, data_details, actual_levels = _wavelet_flow_head.multi_level_haar_dwt(
+                actions,
+                head.levels,
+            )
+            if actual_levels != head.levels:
+                raise AssertionError(f"Expected {head.levels} DWT levels, got {actual_levels}")
+            normalized_data_approx, normalized_data_details = head.normalize_bands(
+                data_approx,
+                tuple(data_details),
+            )
+            noise_approx, noise_details = self._sample_subband_noise(noise_rng, actions)
+            (
+                normalized_state_approx,
+                normalized_state_details,
+                target_approx,
+                target_details,
+            ) = _wavelet_flow_head.subband_flow_bridge(
+                normalized_data_approx,
+                normalized_data_details,
+                noise_approx,
+                noise_details,
+                time,
+            )
+            x_t = self._subband_state_to_actions(normalized_state_approx, normalized_state_details)
+        else:
+            noise = jax.random.normal(noise_rng, actions.shape)
+            x_t = time_expanded * noise + (1 - time_expanded) * actions
+            u_t = noise - actions
 
         # one big forward pass of prefix + suffix at once
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
@@ -316,6 +569,44 @@ class Pi0(_model.BaseModel):
         )
         del prefix_out
         action_token_outputs = suffix_out[:, -self.action_horizon :]
+
+        if subband_mode:
+            predicted_approx, predicted_details, _ = self._predict_subband_velocity(
+                normalized_state_approx,
+                normalized_state_details,
+                action_token_outputs,
+                time,
+            )
+            band_per_example, cross_per_example, metrics = self._subband_losses(
+                predicted_approx,
+                predicted_details,
+                target_approx,
+                target_details,
+            )
+            loss = jnp.broadcast_to(band_per_example[:, None], actions.shape[:-1])
+
+            predicted_action_velocity = self._subband_velocity_to_actions(
+                predicted_approx,
+                predicted_details,
+            )
+            target_action_velocity = self._subband_velocity_to_actions(
+                target_approx,
+                target_details,
+            )
+            action_reconstruction = jnp.mean(
+                jnp.square(predicted_action_velocity - target_action_velocity),
+                axis=-1,
+            )
+            metrics["loss_action_reconstruction"] = jnp.mean(action_reconstruction)
+            if self.wavelet_use_action_reconstruction_loss:
+                loss = loss + self.lambda_wavelet_recon_loss * action_reconstruction
+            if self.wavelet_use_cross_band_consistency:
+                loss = loss + self.wavelet_cross_band_consistency_weight * cross_per_example[:, None]
+            metrics["loss_action_flow"] = jnp.mean(action_reconstruction)
+            if return_metrics:
+                return loss, metrics
+            return loss
+
         v_t, wavelet_info = self._predict_action_velocity(x_t, action_token_outputs)
 
         loss_action = jnp.mean(jnp.square(v_t - u_t), axis=-1)
@@ -340,13 +631,101 @@ class Pi0(_model.BaseModel):
             if wavelet_info is not None and wavelet_info.get("wavelet_gate_mean") is not None:
                 metrics["wavelet_gate_mean"] = wavelet_info["wavelet_gate_mean"]
             if wavelet_info is not None:
-                for key in ("wavelet_gate_A_mean", "wavelet_gate_D1_mean", "wavelet_gate_D2_mean", "wavelet_gate_D3_mean"):
+                for key in (
+                    "wavelet_gate_A_mean",
+                    "wavelet_gate_D1_mean",
+                    "wavelet_gate_D2_mean",
+                    "wavelet_gate_D3_mean",
+                ):
                     if key in wavelet_info:
                         metrics[key] = wavelet_info[key]
 
         if return_metrics:
             return loss, metrics
         return loss
+
+    def _sample_actions_subband(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        num_steps: int | at.Int[at.Array, ""],
+        noise: at.Float[at.Array, "b ah ad"] | None,
+    ) -> _model.Actions:
+        head = self._subband_head()
+        batch_size = observation.state.shape[0]
+        action_template = jnp.zeros(
+            (batch_size, self.action_horizon, self.action_dim),
+            dtype=observation.state.dtype,
+        )
+        if noise is None:
+            normalized_approx, normalized_details = self._sample_subband_noise(rng, action_template)
+        else:
+            if noise.shape != action_template.shape:
+                raise ValueError(f"noise must have shape {action_template.shape}, got {noise.shape}")
+            noise_approx, details, actual_levels = _wavelet_flow_head.multi_level_haar_dwt(
+                noise,
+                head.levels,
+            )
+            if actual_levels != head.levels:
+                raise AssertionError(f"Expected {head.levels} DWT levels, got {actual_levels}")
+            normalized_approx, normalized_details = head.normalize_bands(noise_approx, tuple(details))
+
+        dt = -1.0 / num_steps
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        _, kv_cache = self.PaliGemma.llm(
+            [prefix_tokens, None],
+            mask=prefix_attn_mask,
+            positions=positions,
+        )
+
+        def step(carry):
+            current_approx, current_details, time = carry
+            current_actions = self._subband_state_to_actions(current_approx, current_details)
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+                observation,
+                current_actions,
+                jnp.broadcast_to(time, batch_size),
+            )
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            cached_prefix_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            full_attn_mask = jnp.concatenate([cached_prefix_mask, suffix_attn_mask], axis=-1)
+            suffix_positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens],
+                mask=full_attn_mask,
+                positions=suffix_positions,
+                kv_cache=kv_cache,
+                adarms_cond=[None, adarms_cond],
+            )
+            if prefix_out is not None:
+                raise AssertionError("Cached prefix output must be None during suffix decoding")
+            action_token_outputs = suffix_out[:, -self.action_horizon :]
+            approx_velocity, detail_velocities, _ = self._predict_subband_velocity(
+                current_approx,
+                current_details,
+                action_token_outputs,
+                jnp.broadcast_to(time, batch_size),
+            )
+            next_approx = current_approx + dt * approx_velocity
+            next_details = tuple(
+                detail + dt * velocity for detail, velocity in zip(current_details, detail_velocities, strict=True)
+            )
+            return next_approx, next_details, time + dt
+
+        def cond(carry):
+            _, _, time = carry
+            return time >= -dt / 2
+
+        initial_time = jnp.asarray(1.0, dtype=normalized_approx.dtype)
+        final_approx, final_details, _ = jax.lax.while_loop(
+            cond,
+            step,
+            (normalized_approx, normalized_details, initial_time),
+        )
+        return self._subband_state_to_actions(final_approx, final_details)
 
     @override
     def sample_actions(
@@ -358,6 +737,13 @@ class Pi0(_model.BaseModel):
         noise: at.Float[at.Array, "b ah ad"] | None = None,
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
+        if self.use_wavelet_flow_head and self.wavelet_flow_impl == "subband_flow":
+            return self._sample_actions_subband(
+                rng,
+                observation,
+                num_steps=num_steps,
+                noise=noise,
+            )
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
         # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
         dt = -1.0 / num_steps

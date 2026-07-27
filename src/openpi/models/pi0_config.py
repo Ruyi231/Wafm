@@ -1,4 +1,5 @@
 import dataclasses
+import math
 from typing import TYPE_CHECKING
 
 import flax.nnx as nnx
@@ -34,9 +35,12 @@ class Pi0Config(_model.BaseModelConfig):
 
     pytorch_compile_mode: str | None = "max-autotune"
 
-    # Wavelet Subband Flow Head 默认关闭；关闭时保持原始 action_out_proj 行为。
+    # Wavelet flow is opt-in; disabled keeps the original action_out_proj path.
     use_wavelet_flow_head: bool = False
     wavelet_flow_mode: str = "replace"
+    # Existing configs default to the legacy action-domain bridge. NH-WaFM is
+    # selected explicitly with "subband_flow".
+    wavelet_flow_impl: str = "legacy_head"
     wavelet_levels: int = 3
     wavelet_flow_bottleneck_dim: int = 128
     wavelet_use_band_gate: bool = False
@@ -46,6 +50,22 @@ class Pi0Config(_model.BaseModelConfig):
     lambda_wavelet_gate_supervision: float = 0.0
     wavelet_use_gripper_transition_label: bool = False
     wavelet_gripper_action_index: int | None = None
+
+    # NH-WaFM options. These defaults are inert for pi0.5 and legacy WaFM.
+    wavelet_band_normalization: bool = False
+    wavelet_band_norm_eps: float = 1e-6
+    wavelet_norm_stats_path: str | None = None
+    wavelet_norm_stats_fallback: str = "error"
+    wavelet_hierarchical_coupling: bool = False
+    # False is the canonical NH-WaFM prior: independent N(0, I) in each
+    # normalized band. True is an action-domain shared-noise ablation.
+    wavelet_shared_noise: bool = False
+    wavelet_band_loss_weights: tuple[float, ...] | None = None
+    wavelet_detach_coarse_condition: bool = False
+    wavelet_use_action_reconstruction_loss: bool = False
+    wavelet_use_cross_band_consistency: bool = False
+    wavelet_cross_band_consistency_weight: float = 0.0
+    wavelet_conditioning_mode: str = "temporal_pooling"
 
     def __post_init__(self):
         if self.max_token_len is None:
@@ -59,6 +79,51 @@ class Pi0Config(_model.BaseModelConfig):
                 "max-autotune",
                 "max-autotune-no-cudagraphs",
             ]
+        if self.wavelet_flow_impl not in ("legacy_head", "subband_flow"):
+            raise ValueError(
+                f"wavelet_flow_impl must be 'legacy_head' or 'subband_flow', got {self.wavelet_flow_impl!r}"
+            )
+        if self.wavelet_levels < 1:
+            raise ValueError(f"wavelet_levels must be at least 1, got {self.wavelet_levels}")
+        if not math.isfinite(self.wavelet_band_norm_eps) or self.wavelet_band_norm_eps <= 0:
+            raise ValueError(f"wavelet_band_norm_eps must be positive, got {self.wavelet_band_norm_eps}")
+        if self.wavelet_norm_stats_fallback not in ("error", "identity"):
+            raise ValueError(
+                f"wavelet_norm_stats_fallback must be 'error' or 'identity', got {self.wavelet_norm_stats_fallback!r}"
+            )
+        if self.wavelet_conditioning_mode not in ("temporal_pooling", "band_query"):
+            raise ValueError(
+                "wavelet_conditioning_mode must be 'temporal_pooling' or 'band_query', "
+                f"got {self.wavelet_conditioning_mode!r}"
+            )
+        if self.wavelet_band_loss_weights is not None:
+            effective_levels = min(self.wavelet_levels, max(0, (self.action_horizon - 1).bit_length()))
+            expected_bands = effective_levels + 1
+            if len(self.wavelet_band_loss_weights) != expected_bands:
+                raise ValueError(
+                    "wavelet_band_loss_weights uses prediction order [A_L, D_L, ..., D_1] and must contain "
+                    f"{expected_bands} entries, got {len(self.wavelet_band_loss_weights)}"
+                )
+            if any(not math.isfinite(weight) or weight < 0 for weight in self.wavelet_band_loss_weights):
+                raise ValueError("wavelet_band_loss_weights must be finite and non-negative")
+        if (
+            not math.isfinite(self.wavelet_cross_band_consistency_weight)
+            or self.wavelet_cross_band_consistency_weight < 0
+        ):
+            raise ValueError("wavelet_cross_band_consistency_weight must be finite and non-negative")
+        if self.use_wavelet_flow_head and self.wavelet_flow_impl == "subband_flow":
+            if self.action_horizon < 2:
+                raise ValueError("subband_flow requires action_horizon >= 2")
+            if self.wavelet_use_action_reconstruction_loss and (
+                not math.isfinite(self.lambda_wavelet_recon_loss) or self.lambda_wavelet_recon_loss <= 0
+            ):
+                raise ValueError(
+                    "wavelet_use_action_reconstruction_loss=True requires a finite lambda_wavelet_recon_loss > 0"
+                )
+            if self.wavelet_use_cross_band_consistency and self.wavelet_cross_band_consistency_weight <= 0:
+                raise ValueError(
+                    "wavelet_use_cross_band_consistency=True requires wavelet_cross_band_consistency_weight > 0"
+                )
 
     @property
     @override
@@ -69,7 +134,7 @@ class Pi0Config(_model.BaseModelConfig):
 
     @override
     def create(self, rng: at.KeyArrayLike) -> "Pi0":
-        from openpi.models.pi0 import Pi0
+        from openpi.models.pi0 import Pi0  # noqa: PLC0415
 
         return Pi0(self, rngs=nnx.Rngs(rng))
 
