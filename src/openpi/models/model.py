@@ -4,6 +4,7 @@ import dataclasses
 import enum
 import logging
 import pathlib
+import re
 from typing import Generic, TypeVar
 
 import augmax
@@ -22,6 +23,63 @@ from openpi.shared import image_tools
 import openpi.shared.array_typing as at
 
 logger = logging.getLogger("openpi")
+
+_OPTIONAL_CHECKPOINT_PARAM_PATTERN = re.compile(r".*(?:lora|wavelet_flow_head).*")
+
+
+def _format_param_paths(paths: Sequence[str]) -> str:
+    return "\n".join(f"  - {path}" for path in paths)
+
+
+def _merge_model_params(
+    loaded_params: at.Params,
+    initialized_params: at.Params,
+    *,
+    remove_extra_params: bool,
+) -> at.Params:
+    """Merge a checkpoint into initialized model parameters with narrow compatibility exceptions.
+
+    Only LoRA and wavelet-flow-head leaves may be absent from an older checkpoint. Common
+    leaves retain strict shape checking, and checkpoint-only leaves are either rejected or
+    explicitly logged before being dropped.
+    """
+    flat_loaded = traverse_util.flatten_dict(loaded_params, sep="/")
+    flat_initialized = traverse_util.flatten_dict(initialized_params, sep="/")
+
+    shape_mismatches = [
+        f"{path}: expected {flat_initialized[path].shape}, got {flat_loaded[path].shape}"
+        for path in sorted(flat_loaded.keys() & flat_initialized.keys())
+        if flat_loaded[path].shape != flat_initialized[path].shape
+    ]
+    if shape_mismatches:
+        raise ValueError("Checkpoint parameter shape mismatch:\n" + _format_param_paths(shape_mismatches))
+
+    missing = sorted(flat_initialized.keys() - flat_loaded.keys())
+    missing_optional = [path for path in missing if _OPTIONAL_CHECKPOINT_PARAM_PATTERN.fullmatch(path)]
+    missing_required = [path for path in missing if not _OPTIONAL_CHECKPOINT_PARAM_PATTERN.fullmatch(path)]
+    if missing_required:
+        raise ValueError("Checkpoint is missing required model parameters:\n" + _format_param_paths(missing_required))
+
+    extra = sorted(flat_loaded.keys() - flat_initialized.keys())
+    if extra and not remove_extra_params:
+        raise ValueError("Checkpoint contains unexpected model parameters:\n" + _format_param_paths(extra))
+    if extra:
+        logger.warning(
+            "Dropping %d checkpoint parameter(s) not present in the current model:\n%s",
+            len(extra),
+            _format_param_paths(extra),
+        )
+    if missing_optional:
+        logger.warning(
+            "Checkpoint is missing %d optional parameter(s); retaining their initialized values:\n%s",
+            len(missing_optional),
+            _format_param_paths(missing_optional),
+        )
+
+    merged = {path: flat_loaded[path] for path in flat_loaded.keys() & flat_initialized.keys()}
+    merged.update({path: flat_initialized[path] for path in missing_optional})
+    return traverse_util.unflatten_dict(merged, sep="/")
+
 
 # Type variable for array types (JAX arrays, PyTorch tensors, or numpy arrays)
 ArrayT = TypeVar("ArrayT", bound=jax.Array | torch.Tensor | np.ndarray)
@@ -234,9 +292,13 @@ class BaseModelConfig(abc.ABC):
         """Create a model with the given parameters."""
         model = nnx.eval_shape(self.create, jax.random.key(0))
         graphdef, state = nnx.split(model)
-        if remove_extra_params:
-            params = ocp.transform_utils.intersect_trees(state.to_pure_dict(), params)
-        at.check_pytree_equality(expected=state.to_pure_dict(), got=params, check_shapes=True, check_dtypes=False)
+        initialized_params = state.to_pure_dict()
+        params = _merge_model_params(
+            params,
+            initialized_params,
+            remove_extra_params=remove_extra_params,
+        )
+        at.check_pytree_equality(expected=initialized_params, got=params, check_shapes=True, check_dtypes=False)
         state.replace_by_pure_dict(params)
         return nnx.merge(graphdef, state)
 

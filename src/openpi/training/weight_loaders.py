@@ -87,18 +87,45 @@ def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex:
     flat_ref = flax.traverse_util.flatten_dict(params, sep="/")
     flat_loaded = flax.traverse_util.flatten_dict(loaded_params, sep="/")
 
-    # First, take all weights that are a subset of the reference weights.
-    result = {}
-    for k, v in flat_loaded.items():
-        if k in flat_ref:
-            result[k] = v.astype(flat_ref[k].dtype) if v.dtype != flat_ref[k].dtype else v
-
-    flat_loaded.clear()
-
-    # Then, merge any missing weights as defined by the missing regex.
     pattern = re.compile(missing_regex)
-    for k in {k for k in flat_ref if pattern.fullmatch(k)}:
-        if k not in result:
-            result[k] = flat_ref[k]
+    common = flat_loaded.keys() & flat_ref.keys()
+    shape_mismatches = [
+        f"{key}: expected {flat_ref[key].shape}, got {flat_loaded[key].shape}"
+        for key in sorted(common)
+        if flat_loaded[key].shape != flat_ref[key].shape
+    ]
+    if shape_mismatches:
+        raise ValueError(
+            "Checkpoint parameter shape mismatch:\n" + "\n".join(f"  - {item}" for item in shape_mismatches)
+        )
+
+    missing = sorted(flat_ref.keys() - flat_loaded.keys())
+    allowed_missing = [key for key in missing if pattern.fullmatch(key)]
+    required_missing = [key for key in missing if not pattern.fullmatch(key)]
+    if required_missing:
+        raise ValueError(
+            "Checkpoint is missing required parameters:\n" + "\n".join(f"  - {key}" for key in required_missing)
+        )
+
+    extra = sorted(flat_loaded.keys() - flat_ref.keys())
+    if extra:
+        logger.warning(
+            "Dropping %d checkpoint parameter(s) not present in the current model:\n%s",
+            len(extra),
+            "\n".join(f"  - {key}" for key in extra),
+        )
+    if allowed_missing:
+        logger.warning(
+            "Checkpoint is missing %d permitted parameter(s); retaining their initialized values:\n%s",
+            len(allowed_missing),
+            "\n".join(f"  - {key}" for key in allowed_missing),
+        )
+
+    result = {
+        key: value.astype(flat_ref[key].dtype) if value.dtype != flat_ref[key].dtype else value
+        for key, value in flat_loaded.items()
+        if key in flat_ref
+    }
+    result.update({key: flat_ref[key] for key in allowed_missing})
 
     return flax.traverse_util.unflatten_dict(result, sep="/")
