@@ -339,6 +339,10 @@ class Pi0(_model.BaseModel):
             }
             if wavelet_info is not None and wavelet_info.get("wavelet_gate_mean") is not None:
                 metrics["wavelet_gate_mean"] = wavelet_info["wavelet_gate_mean"]
+            if wavelet_info is not None:
+                for key in ("wavelet_gate_A_mean", "wavelet_gate_D1_mean", "wavelet_gate_D2_mean", "wavelet_gate_D3_mean"):
+                    if key in wavelet_info:
+                        metrics[key] = wavelet_info[key]
 
         if return_metrics:
             return loss, metrics
