@@ -27,6 +27,43 @@ def _normalized_actions(data_loader: Iterable[Any], num_batches: int) -> Iterabl
         yield batch[1]
 
 
+def _require_action_norm_stats(data_config: Any, config_name: str) -> None:
+    """Reject statistics computed from actions that skipped OpenPI normalization."""
+    norm_stats = data_config.norm_stats
+    if norm_stats is None or "actions" not in norm_stats:
+        raise FileNotFoundError(
+            f"Config {config_name!r} did not load OpenPI action norm_stats. "
+            "NH-WaFM wavelet statistics must be computed after action normalization. "
+            "Run scripts/compute_norm_stats.py for the action-statistics asset owner, "
+            "then verify the configured data.assets directory before retrying."
+        )
+
+
+def _resolve_output_path(
+    config: _config.TrainConfig,
+    data_config: _config.DataConfig,
+    output_path: pathlib.Path | None,
+    requested_levels: int,
+) -> pathlib.Path:
+    """Resolve an explicit path before falling back to config-owned assets."""
+    if output_path is not None:
+        return output_path
+
+    configured_path = getattr(config.model, "wavelet_norm_stats_path", None)
+    if configured_path is not None:
+        configured_levels = getattr(config.model, "wavelet_levels", None)
+        if configured_levels != requested_levels:
+            raise ValueError(
+                "The model-configured wavelet_norm_stats_path can only be used with "
+                f"wavelet_levels={configured_levels}; got --levels={requested_levels}. "
+                "Pass --output-path explicitly for a levels ablation."
+            )
+        return pathlib.Path(configured_path)
+
+    dataset_path = pathlib.Path(data_config.repo_id) if data_config.repo_id else pathlib.Path("dataset")
+    return config.assets_dirs / dataset_path / f"wavelet_norm_stats_l{requested_levels}.json"
+
+
 def main(
     config_name: str,
     output_path: pathlib.Path | None = None,
@@ -53,6 +90,8 @@ def main(
         num_batches=num_batches,
         skip_norm_stats=False,
     )
+    data_config = data_loader.data_config()
+    _require_action_norm_stats(data_config, config_name)
     stats = wavelet_normalization.compute_wavelet_norm_stats(
         _normalized_actions(data_loader, num_batches),
         levels,
@@ -60,10 +99,7 @@ def main(
         source_config=config_name,
     )
 
-    if output_path is None:
-        data_config = data_loader.data_config()
-        dataset_path = pathlib.Path(data_config.repo_id) if data_config.repo_id else pathlib.Path("dataset")
-        output_path = config.assets_dirs / dataset_path / f"wavelet_norm_stats_l{stats.requested_levels}.json"
+    output_path = _resolve_output_path(config, data_config, output_path, stats.requested_levels)
     output_path = wavelet_normalization.save_wavelet_norm_stats(output_path, stats)
 
     print(f"Wrote wavelet normalization statistics to: {output_path}")

@@ -1,12 +1,21 @@
 {
   "schema_version": 1,
   "name": "plan1_nh_wafm_experiment_manifest",
-  "description": "Plan 1 的可审计实验参数矩阵。该 JSON 当前不由 OpenPI Tyro 配置系统自动读取；真实训练前必须把选定条目注册为命名 TrainConfig，并在训练与评测时使用同一配置名。",
+  "description": "Plan 1 的可审计实验参数矩阵。该 JSON 不由 OpenPI Tyro 配置系统自动读取；阶段 1 已注册为四个命名 TrainConfig，阶段 2/3 仍需按顺序注册后运行。训练与评测必须使用同一配置名。",
   "runtime_integration": {
     "consumed_by_training_cli": false,
+    "stage1_named_configs_registered": true,
+    "stage1_train_configs": {
+      "p1_pi05_baseline": "plan1_pi05_libero_baseline",
+      "p1_legacy_wafm": "plan1_legacy_wafm_l2",
+      "p1_subband_no_norm": "plan1_subband_l2_no_norm",
+      "p1_subband_with_norm": "plan1_subband_l2_norm"
+    },
     "registered_smoke_config": "debug_nh_wafm",
     "portable_original_config": "pi05_libero",
     "registered_legacy_reference": "libero_full_wafm_l2_nogate_loss",
+    "shared_action_norm_stats_dir": "./assets/pi05_libero/physical-intelligence/libero",
+    "wavelet_norm_stats_l2_path": "./assets/pi05_libero/physical-intelligence/libero/wavelet_norm_stats_l2.json",
     "require_named_config_for_checkpoint_evaluation": true
   },
   "common_nh_wafm_model_overrides": {
@@ -24,6 +33,7 @@
     "wavelet_use_cross_band_consistency": false,
     "wavelet_cross_band_consistency_weight": 0.0,
     "wavelet_use_band_gate": false,
+    "lambda_wavelet_flow_loss": 0.0,
     "lambda_wavelet_sparse_gate": 0.0,
     "lambda_wavelet_gate_supervision": 0.0
   },
@@ -62,6 +72,7 @@
         {
           "experiment_id": "p1_pi05_baseline",
           "base_train_config": "pi05_libero",
+          "train_config": "plan1_pi05_libero_baseline",
           "registered": true,
           "status": "not_run_in_plan1_delivery",
           "model_overrides": {
@@ -71,7 +82,8 @@
         {
           "experiment_id": "p1_legacy_wafm",
           "base_train_config": "pi05_libero",
-          "registered": false,
+          "train_config": "plan1_legacy_wafm_l2",
+          "registered": true,
           "legacy_reference_config": "libero_full_wafm_l2_nogate_loss",
           "status": "not_run_in_plan1_delivery",
           "model_overrides": {
@@ -86,7 +98,8 @@
         {
           "experiment_id": "p1_subband_no_norm",
           "base_train_config": "pi05_libero",
-          "registered": false,
+          "train_config": "plan1_subband_l2_no_norm",
+          "registered": true,
           "status": "not_run_in_plan1_delivery",
           "model_overrides": {
             "wavelet_levels": 2,
@@ -99,13 +112,14 @@
         {
           "experiment_id": "p1_subband_with_norm",
           "base_train_config": "pi05_libero",
-          "registered": false,
+          "train_config": "plan1_subband_l2_norm",
+          "registered": true,
           "status": "not_run_in_plan1_delivery",
           "requires_wavelet_norm_stats": true,
           "model_overrides": {
             "wavelet_levels": 2,
             "wavelet_band_normalization": true,
-            "wavelet_norm_stats_path": "<required: dataset-specific wavelet_norm_stats_l2.json>",
+            "wavelet_norm_stats_path": "./assets/pi05_libero/physical-intelligence/libero/wavelet_norm_stats_l2.json",
             "wavelet_hierarchical_coupling": false,
             "wavelet_conditioning_mode": "temporal_pooling"
           }
