@@ -1,6 +1,6 @@
 # Plan 1：NH-WaFM 实现说明
 
-_基于 `codex/nh-wafm-plan1` 当前源码与实际测试产物整理；截至 2026-07-27。_
+_基于 `codex/nh-wafm-plan1` 当前源码与实际测试产物整理；截至 2026-07-28。_
 
 ---
 
@@ -16,6 +16,7 @@ _基于 `codex/nh-wafm-plan1` 当前源码与实际测试产物整理；截至 2
 | 训练与子带 ODE | 已实现并做 dummy 模型测试 | [`pi0.py`](src/openpi/models/pi0.py) |
 | checkpoint 部分加载 | 已实现并做定向单测 | [`model.py`](src/openpi/models/model.py)、[`weight_loaders.py`](src/openpi/training/weight_loaders.py) |
 | 400 步小数据 overfit | 已通过 | [`wavelet_overfit.json`](plan1_results/wavelet_overfit/wavelet_overfit.json) |
+| LIBERO 阶段 1 公平配置 | 已注册，待服务器实跑 | [`config.py`](src/openpi/training/config.py)、[`config_test.py`](src/openpi/training/config_test.py) |
 | LIBERO/CALVIN/RoboTwin 完整实验 | 未执行 | 见 [`PLAN1_LIMITATIONS.md`](PLAN1_LIMITATIONS.md) |
 
 > ⚠️ **范围说明：** “已实现”表示源码路径和定向测试存在，不表示已经获得机器人任务成功率提升。完整 benchmark 结果仍为空，不能由合成 overfit 结果替代。
@@ -197,7 +198,16 @@ legacy gate 参数保留用于旧 checkpoint 和消融。NH-WaFM head 的 `wavel
 
 已注册的 `debug_nh_wafm` 使用 dummy PaliGemma/action expert、horizon 10、level 2、层次 coupling 和 temporal pooling，用于假数据 smoke，而不是完整 benchmark 配置。
 
-[`configs/plan1_experiments.json`](configs/plan1_experiments.json) 给出阶段 1–4 的参数矩阵。该文件是审计清单，当前没有被 `openpi.training.config.cli()` 自动解析。真实训练必须把选定条目注册成命名 `TrainConfig`，并保证训练和 `serve_policy.py` 使用同一名称。
+[`configs/plan1_experiments.json`](configs/plan1_experiments.json) 给出阶段 1–4 的参数矩阵。JSON 本身不被 `openpi.training.config.cli()` 自动解析，但阶段 1 已注册以下四个命名 `TrainConfig`：
+
+| 实验 | 训练与评测配置名 | 唯一变化 |
+| --- | --- | --- |
+| 原始 \(\pi_{0.5}\) | `plan1_pi05_libero_baseline` | 不启用 wavelet head |
+| legacy WaFM level 2 | `plan1_legacy_wafm_l2` | 动作域 bridge 与 legacy head |
+| 子带 flow、无频带归一化 | `plan1_subband_l2_no_norm` | 真正子带 bridge |
+| 子带 flow、有频带归一化 | `plan1_subband_l2_norm` | 在上一项基础上启用 band stats |
+
+四个配置通过同一 helper 固定 LIBERO 数据、动作 `norm_stats`、base checkpoint、优化器、EMA、seed、batch size 和训练步数。阶段 2/3 仍未注册，必须等阶段 1 门槛通过后再继续。服务器命令见 [`PLAN1_SERVER_RUNBOOK.md`](PLAN1_SERVER_RUNBOOK.md)。
 
 ## 📊 训练损失与日志
 
@@ -313,18 +323,23 @@ Orbax `--resume` 仍面向相同完整训练状态。把旧架构迁移到 NH-Wa
 
 ### 计算 wavelet 统计
 
-先为目标数据注册命名训练配置，再从完整训练 data loader 计算统计：
+先只用原始 `pi05_libero` 计算一次 OpenPI 动作统计，四个阶段 1 配置都显式读取这一个目录：
+
+```bash
+uv run scripts/compute_norm_stats.py --config-name pi05_libero
+```
+
+随后使用目标 norm 配置从完整训练 data loader 计算 level 2 统计。脚本不会实例化模型，会优先把结果写到该模型配置的 `wavelet_norm_stats_path`：
 
 ```bash
 uv run scripts/compute_wavelet_norm_stats.py \
-  --config-name <named_nh_config> \
+  --config-name plan1_subband_l2_norm \
   --levels 2 \
   --num-batches 1000 \
-  --eps 1e-6 \
-  --output-path assets/<dataset>/wavelet_norm_stats_l2.json
+  --eps 1e-6
 ```
 
-脚本固定使用 `skip_norm_stats=false`，因此读取的是已经经过 OpenPI `norm_stats` 和 model transform 的动作。统计文件必须与训练的 dataset、action horizon、action dimension、padding 和 levels 一致。
+脚本固定使用 `skip_norm_stats=false`，并在 data config 未加载动作 `norm_stats` 时立即报错，因此读取的是已经经过 OpenPI normalization 和 model transform 的动作。统计文件必须与训练的 dataset、action horizon、action dimension、padding 和 levels 一致。
 
 ### Smoke 与 overfit
 
@@ -354,11 +369,11 @@ uv run scripts/run_wavelet_overfit.py --output-dir plan1_results/wavelet_overfit
 
 ### 真实训练
 
-把 [`configs/plan1_experiments.json`](configs/plan1_experiments.json) 的一个条目转成命名 `TrainConfig`，并在该 config 中填入真实统计路径后运行：
+阶段 1 使用已经注册的四个配置之一运行：
 
 ```bash
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-uv run scripts/train.py <named_nh_config> \
+uv run scripts/train.py <stage1_config> \
   --exp-name=<experiment_name> \
   --overwrite
 ```
@@ -371,8 +386,8 @@ uv run scripts/train.py <named_nh_config> \
 
 ```bash
 uv run scripts/serve_policy.py policy:checkpoint \
-  --policy.config=<named_nh_config> \
-  --policy.dir=checkpoints/<named_nh_config>/<experiment_name>/<step>
+  --policy.config=<stage1_config> \
+  --policy.dir=checkpoints/<stage1_config>/<experiment_name>/<step>
 ```
 
 然后在安装好 LIBERO 依赖的客户端环境运行：
@@ -394,6 +409,7 @@ python examples/libero/main.py
 | `weight_loaders_test.py` | 4 passed | 可选参数初始化、extra 日志、必要参数缺失、shape mismatch |
 | NH-WaFM model 定向测试 | 4 passed | 1/5/10 步采样、forward/backward 无 NaN/Inf |
 | legacy mode 定向测试 | 1 passed | legacy loss 字段与采样 shape 不变 |
+| 阶段 1 配置与统计脚本测试 | 待服务器执行 | 四配置公平性、manifest 映射、动作统计缺失拒绝、输出路径一致性 |
 
 `scripts/train.py debug_nh_wafm` 也曾在本隔离环境中尝试启动，但因该临时环境没有安装项目锁定的 `lerobot` 依赖而在导入 `openpi.training.data_loader` 时停止，尚未进入 `train_step`。因此本表不把 debug 训练循环、梯度日志或 checkpoint save 记为已通过。
 
@@ -437,8 +453,11 @@ PYTHONPATH=src JAX_PLATFORMS=cpu uv run pytest -q \
 | [`src/openpi/models/pi0.py`](src/openpi/models/pi0.py) | 三模式训练与采样分支 |
 | [`src/openpi/models/pi0_config.py`](src/openpi/models/pi0_config.py) | 新配置字段与校验 |
 | [`scripts/compute_wavelet_norm_stats.py`](scripts/compute_wavelet_norm_stats.py) | 离线子带统计 |
+| [`scripts/compute_wavelet_norm_stats_test.py`](scripts/compute_wavelet_norm_stats_test.py) | 动作统计前置条件与输出路径测试 |
 | [`scripts/run_wavelet_overfit.py`](scripts/run_wavelet_overfit.py) | 合成小数据止损门槛 |
 | [`scripts/train.py`](scripts/train.py) | per-band head 梯度范数日志 |
+| [`src/openpi/training/config_test.py`](src/openpi/training/config_test.py) | 阶段 1 公平性与 manifest 一致性测试 |
 | [`configs/plan1_experiments.json`](configs/plan1_experiments.json) | 分阶段实验参数矩阵 |
+| [`PLAN1_SERVER_RUNBOOK.md`](PLAN1_SERVER_RUNBOOK.md) | 服务器安装、统计、smoke、短跑与评测门槛 |
 | [`PLAN1_EXPERIMENT_RESULTS.csv`](PLAN1_EXPERIMENT_RESULTS.csv) | benchmark 结果汇总表 |
 | [`PLAN1_LIMITATIONS.md`](PLAN1_LIMITATIONS.md) | 尚未验证事项与止损边界 |

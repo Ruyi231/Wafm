@@ -1,6 +1,6 @@
 # Plan 1：NH-WaFM 限制与未完成验证
 
-_本文件只记录当前代码与已执行测试能够支持的结论；截至 2026-07-27。_
+_本文件只记录当前代码与已执行测试能够支持的结论；截至 2026-07-28。_
 
 ---
 
@@ -50,21 +50,24 @@ wavelet mean/std 依赖：
 - action horizon 与 action dimension
 - Haar levels 与 edge-padding 规则
 
-更换任一项后都应重新计算统计。加载器会校验已保存的 levels、horizon 和 action dimension，但无法证明数据集内容本身与 `source_config` 名称一致。
+更换任一项后都应重新计算统计。统计脚本会拒绝未加载动作 `norm_stats` 的 data config，并优先写入模型配置的 `wavelet_norm_stats_path`；模型加载器会继续校验 levels、horizon 和 action dimension。但这些检查仍无法证明数据集内容本身与 `source_config` 名称一致，服务器记录必须保存数据版本与统计文件 SHA-256。
 
 ## ⚙️ 配置与运行限制
 
-### JSON 实验矩阵不是运行时配置
+### JSON 实验矩阵仍不是运行时配置
 
-[`configs/plan1_experiments.json`](configs/plan1_experiments.json) 是可审计参数矩阵，当前不会被 `openpi.training.config.cli()` 自动读取。仓库已注册 `debug_nh_wafm`，但它使用 fake data 与 dummy 模型，只适合作 smoke。
+[`configs/plan1_experiments.json`](configs/plan1_experiments.json) 是可审计参数矩阵，不会被 `openpi.training.config.cli()` 自动读取。阶段 1 的四个 LIBERO 条目已经手工注册为命名 `TrainConfig`；`debug_nh_wafm` 仍只使用 fake data 与 dummy 模型。
 
-完整实验前必须：
+阶段 1 服务器验证前仍必须：
 
-1. 把选定矩阵条目注册为 `src/openpi/training/config.py` 中的命名 `TrainConfig`
-2. 填入真实 dataset、assets 与 wavelet stats 路径
-3. 训练和 `serve_policy.py` 使用同一个配置名
+1. 在 `assets/pi05_libero/physical-intelligence/libero` 生成真实动作 `norm_stats`
+2. 用同一归一化数据生成 `wavelet_norm_stats_l2.json`
+3. 运行新增配置测试、debug 训练、checkpoint resume 和短训练门槛
+4. 训练和 `serve_policy.py` 使用同一个配置名
 
 如果只在训练 CLI 临时覆盖模型字段，而评测仍用 `pi05_libero`，服务端会按原始 \(\pi_{0.5}\) 架构创建模型，导致 checkpoint tree 不匹配。
+
+阶段 2 的 hierarchical/Band Query 与阶段 3 的 level 1/2/3 条目仍未注册，这是有意的顺序门控，不是已经可启动的实验。
 
 ### 缺少完整 benchmark 驱动
 
@@ -140,6 +143,7 @@ Haar 变换在未裁剪的正交情形下保留能量，因此均匀 band MSE �
 - 旧完整 optimizer state 不能无损迁移到新 head
 - Orbax resume 应用于相同架构，不应用于旧架构到 NH-WaFM 的迁移
 - extra 参数默认可 warning 后删除；需要严格审计时应设置 `remove_extra_params=false`
+- 当前 checkpoint `assets` 回调只保存 OpenPI 动作 `norm_stats`，不会复制独立的 wavelet stats JSON；迁移 checkpoint 时必须同时保留配置所指向的统计文件及其 SHA-256
 
 日志能防止静默跳过，但无法替代一次实际 checkpoint load 与 policy inference 验证。当前定向测试使用的是小型参数树，不是真实多 GB checkpoint。
 
@@ -170,12 +174,12 @@ Haar 变换在未裁剪的正交情形下保留能量，因此均匀 band MSE �
 
 ## 🎯 建议的下一验证顺序
 
-1. 为同一 LIBERO 数据注册四个阶段 1 命名配置
-2. 分别计算 level 2 统计，校验 metadata 和抽样 roundtrip
+1. 已完成：为同一 LIBERO 数据注册四个阶段 1 命名配置
+2. 在服务器计算 level 2 统计，校验 metadata 和抽样 roundtrip
 3. 每个配置先跑短训练并检查所有 band loss、energy 和 gradient norm
 4. 用同一 checkpoint step 比较 action-domain validation error
-5. 只在阶段 1 稳定后运行 independent/hierarchical/Band Query
-6. 只在结构收益稳定后比较 level 1/2/3
+5. 只在阶段 1 稳定后注册并运行 independent/hierarchical/Band Query
+6. 只在结构收益稳定后注册并比较 level 1/2/3
 7. 最后运行至少两个 seed 的 LIBERO；CALVIN/RoboTwin 在补齐 driver 后再开始
 
 每一步都应把真实命令、commit、seed、checkpoint step 和原始指标写入 [`PLAN1_EXPERIMENT_RESULTS.csv`](PLAN1_EXPERIMENT_RESULTS.csv)。未执行的行保持 `pending`，负结果也应保留。
