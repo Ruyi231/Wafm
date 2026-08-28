@@ -9,6 +9,7 @@ from typing_extensions import override
 
 from openpi.models import model as _model
 from openpi.models import pi0_config
+from openpi.models import raw_velocity_head as _raw_velocity_head
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
@@ -67,6 +68,7 @@ class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
+        self.action_velocity_head = config.action_velocity_head
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -97,7 +99,20 @@ class Pi0(_model.BaseModel):
             self.state_proj = nnx.Linear(config.action_dim, action_expert_config.width, rngs=rngs)
             self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
             self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
-        self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
+        self.action_out_proj = None
+        self.raw_velocity_head = None
+        if self.action_velocity_head == "linear":
+            self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
+        elif self.action_velocity_head == "raw_film":
+            self.raw_velocity_head = _raw_velocity_head.RawFiLMVelocityHead(
+                action_dim=config.action_dim,
+                token_dim=action_expert_config.width,
+                bottleneck_dim=config.raw_film_bottleneck_dim,
+                num_experts=config.raw_film_num_experts,
+                rngs=rngs,
+            )
+        else:
+            raise ValueError(f"Unsupported action_velocity_head: {self.action_velocity_head!r}")
 
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
@@ -185,6 +200,19 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask, adarms_cond
 
+    def _predict_action_velocity(
+        self,
+        noisy_actions: _model.Actions,
+        action_token_outputs: at.Float[at.Array, "b ah emb"],
+    ) -> _model.Actions:
+        if self.action_velocity_head == "linear":
+            if self.action_out_proj is None:
+                raise ValueError("linear action velocity head was not initialized")
+            return self.action_out_proj(action_token_outputs)
+        if self.raw_velocity_head is None:
+            raise ValueError("raw_film action velocity head was not initialized")
+        return self.raw_velocity_head(noisy_actions, action_token_outputs)
+
     @override
     def compute_loss(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
@@ -209,7 +237,7 @@ class Pi0(_model.BaseModel):
         (prefix_out, suffix_out), _ = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
         )
-        v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        v_t = self._predict_action_velocity(x_t, suffix_out[:, -self.action_horizon :])
 
         return jnp.mean(jnp.square(v_t - u_t), axis=-1)
 
@@ -266,7 +294,7 @@ class Pi0(_model.BaseModel):
                 adarms_cond=[None, adarms_cond],
             )
             assert prefix_out is None
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            v_t = self._predict_action_velocity(x_t, suffix_out[:, -self.action_horizon :])
 
             return x_t + dt * v_t, time + dt
 

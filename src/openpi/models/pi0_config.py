@@ -1,5 +1,5 @@
 import dataclasses
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import flax.nnx as nnx
 import jax
@@ -32,9 +32,18 @@ class Pi0Config(_model.BaseModelConfig):
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
+    # Selects the action-velocity output parameterization. The default preserves the official linear head.
+    action_velocity_head: Literal["linear", "raw_film"] = "linear"
+    raw_film_bottleneck_dim: int = 128
+    raw_film_num_experts: int = 1
+
     pytorch_compile_mode: str | None = "max-autotune"
 
     def __post_init__(self):
+        if self.raw_film_bottleneck_dim < 1:
+            raise ValueError(f"raw_film_bottleneck_dim must be positive, got {self.raw_film_bottleneck_dim}")
+        if self.raw_film_num_experts < 1:
+            raise ValueError(f"raw_film_num_experts must be positive, got {self.raw_film_num_experts}")
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:
