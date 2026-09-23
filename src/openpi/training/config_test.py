@@ -27,17 +27,17 @@ def test_plan1_stage1_configs_share_training_setup():
             assert all(value == values[0] for value in values)
 
     for config in configs:
-        assert isinstance(config.data, _config.LeRobotLiberoDataConfig)
-        assert config.data.repo_id == "physical-intelligence/libero"
+        assert isinstance(config.data, _config.LeRobotFullDataConfig)
+        assert config.data.repo_id == "/nfs/lizhenhao/huggingface/lerobot/libero_full"
         assert config.data.assets == _config.AssetsConfig(
-            assets_dir="./assets/pi05_libero",
-            asset_id="physical-intelligence/libero",
+            assets_dir="/nfs/lizhenhao/huggingface/lerobot",
+            asset_id="libero_full",
         )
         assert config.data.base_config is not None
         assert config.data.base_config.prompt_from_task
         assert not config.data.extra_delta_transform
 
-        assert config.batch_size == 256
+        assert config.batch_size == 128
         assert config.ema_decay == 0.999
         assert config.seed == 42
         assert config.num_train_steps == 30_000
@@ -83,7 +83,7 @@ def test_plan1_stage1_model_ablation_boundaries():
     assert subband_norm.wavelet_norm_stats_fallback == "error"
     assert (
         subband_norm.wavelet_norm_stats_path
-        == "./assets/pi05_libero/physical-intelligence/libero/wavelet_norm_stats_l2.json"
+        == "/nfs/lizhenhao/huggingface/lerobot/libero_full/wavelet_norm_stats_l2.json"
     )
     subband_differences = {
         field.name
@@ -94,6 +94,63 @@ def test_plan1_stage1_model_ablation_boundaries():
         "wavelet_band_normalization",
         "wavelet_norm_stats_path",
     }
+
+
+def test_plan1_subband_norm_reconstruction_config_changes_only_objective():
+    baseline = _config.get_config("plan1_subband_l2_norm")
+    reconstruction = _config.get_config("plan1_subband_l2_norm_recon")
+
+    for field in dataclasses.fields(baseline):
+        if field.name in {"name", "model"}:
+            continue
+        baseline_value = getattr(baseline, field.name)
+        reconstruction_value = getattr(reconstruction, field.name)
+        if field.name == "freeze_filter":
+            assert type(reconstruction_value) is type(baseline_value)
+            assert repr(reconstruction_value) == repr(baseline_value)
+        else:
+            assert reconstruction_value == baseline_value
+
+    model_differences = {
+        field.name
+        for field in dataclasses.fields(baseline.model)
+        if getattr(baseline.model, field.name) != getattr(reconstruction.model, field.name)
+    }
+    assert model_differences == {
+        "wavelet_use_action_reconstruction_loss",
+        "lambda_wavelet_recon_loss",
+    }
+    assert reconstruction.model.wavelet_use_action_reconstruction_loss
+    assert reconstruction.model.lambda_wavelet_recon_loss == 1.0
+
+
+def test_plan1_reconstruction_weight_sweep_changes_only_reconstruction_weight():
+    baseline = _config.get_config("plan1_subband_l2_norm_recon")
+    variants = {
+        "plan1_subband_l2_norm_recon_w3": 3.0,
+        "plan1_subband_l2_norm_recon_w10": 10.0,
+    }
+
+    for name, expected_weight in variants.items():
+        variant = _config.get_config(name)
+        for field in dataclasses.fields(baseline):
+            if field.name in {"name", "model"}:
+                continue
+            baseline_value = getattr(baseline, field.name)
+            variant_value = getattr(variant, field.name)
+            if field.name == "freeze_filter":
+                assert type(variant_value) is type(baseline_value)
+                assert repr(variant_value) == repr(baseline_value)
+            else:
+                assert variant_value == baseline_value
+
+        model_differences = {
+            field.name
+            for field in dataclasses.fields(baseline.model)
+            if getattr(baseline.model, field.name) != getattr(variant.model, field.name)
+        }
+        assert model_differences == {"lambda_wavelet_recon_loss"}
+        assert variant.model.lambda_wavelet_recon_loss == expected_weight
 
 
 def test_plan1_manifest_matches_registered_stage1_configs():
@@ -114,7 +171,8 @@ def test_plan1_manifest_matches_registered_stage1_configs():
     }
     runtime = manifest["runtime_integration"]
     assert runtime["stage1_train_configs"] == registered
-    assert runtime["shared_action_norm_stats_dir"] == "./assets/pi05_libero/physical-intelligence/libero"
+    assert runtime["stage1_dataset_root"] == "/nfs/lizhenhao/huggingface/lerobot/libero_full"
+    assert runtime["shared_action_norm_stats_dir"] == "/nfs/lizhenhao/huggingface/lerobot/libero_full"
     assert (
         runtime["wavelet_norm_stats_l2_path"]
         == _config.get_config("plan1_subband_l2_norm").model.wavelet_norm_stats_path

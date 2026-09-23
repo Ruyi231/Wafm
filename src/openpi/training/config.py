@@ -756,11 +756,10 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
 
-_PLAN1_LIBERO_ACTION_ASSETS_DIR = "./assets/pi05_libero"
-_PLAN1_LIBERO_ASSET_ID = "physical-intelligence/libero"
-_PLAN1_LIBERO_WAVELET_STATS_L2 = (
-    "./assets/pi05_libero/physical-intelligence/libero/wavelet_norm_stats_l2.json"
-)
+_PLAN1_LIBERO_DATASET_ROOT = "/nfs/lizhenhao/huggingface/lerobot/libero_full"
+_PLAN1_LIBERO_ACTION_ASSETS_DIR = "/nfs/lizhenhao/huggingface/lerobot"
+_PLAN1_LIBERO_ASSET_ID = "libero_full"
+_PLAN1_LIBERO_WAVELET_STATS_L2 = f"{_PLAN1_LIBERO_DATASET_ROOT}/wavelet_norm_stats_l2.json"
 
 
 def _plan1_libero_stage1_config(*, name: str, model: pi0_config.Pi0Config) -> TrainConfig:
@@ -768,8 +767,8 @@ def _plan1_libero_stage1_config(*, name: str, model: pi0_config.Pi0Config) -> Tr
     return TrainConfig(
         name=name,
         model=model,
-        data=LeRobotLiberoDataConfig(
-            repo_id="physical-intelligence/libero",
+        data=LeRobotFullDataConfig(
+            repo_id=_PLAN1_LIBERO_DATASET_ROOT,
             assets=AssetsConfig(
                 assets_dir=_PLAN1_LIBERO_ACTION_ASSETS_DIR,
                 asset_id=_PLAN1_LIBERO_ASSET_ID,
@@ -777,7 +776,7 @@ def _plan1_libero_stage1_config(*, name: str, model: pi0_config.Pi0Config) -> Tr
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
         ),
-        batch_size=256,
+        batch_size=128,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
             peak_lr=5e-5,
@@ -1502,6 +1501,96 @@ _CONFIGS = [
             wavelet_detach_coarse_condition=False,
             wavelet_use_action_reconstruction_loss=False,
             lambda_wavelet_recon_loss=0.0,
+            wavelet_use_cross_band_consistency=False,
+            wavelet_cross_band_consistency_weight=0.0,
+            wavelet_conditioning_mode="temporal_pooling",
+            wavelet_use_band_gate=False,
+            lambda_wavelet_flow_loss=0.0,
+            lambda_wavelet_sparse_gate=0.0,
+            lambda_wavelet_gate_supervision=0.0,
+        ),
+    ),
+    _plan1_libero_stage1_config(
+        name="plan1_subband_l2_norm_recon",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            use_wavelet_flow_head=True,
+            wavelet_flow_impl="subband_flow",
+            wavelet_flow_mode="replace",
+            wavelet_levels=2,
+            wavelet_flow_bottleneck_dim=128,
+            wavelet_band_normalization=True,
+            wavelet_band_norm_eps=1e-6,
+            wavelet_norm_stats_path=_PLAN1_LIBERO_WAVELET_STATS_L2,
+            wavelet_norm_stats_fallback="error",
+            wavelet_hierarchical_coupling=False,
+            wavelet_shared_noise=False,
+            wavelet_band_loss_weights=None,
+            wavelet_detach_coarse_condition=False,
+            wavelet_use_action_reconstruction_loss=True,
+            lambda_wavelet_recon_loss=1.0,
+            wavelet_use_cross_band_consistency=False,
+            wavelet_cross_band_consistency_weight=0.0,
+            wavelet_conditioning_mode="temporal_pooling",
+            wavelet_use_band_gate=False,
+            lambda_wavelet_flow_loss=0.0,
+            lambda_wavelet_sparse_gate=0.0,
+            lambda_wavelet_gate_supervision=0.0,
+        ),
+    ),
+    _plan1_libero_stage1_config(
+        name="plan1_subband_l2_norm_recon_w3",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            use_wavelet_flow_head=True,
+            wavelet_flow_impl="subband_flow",
+            wavelet_flow_mode="replace",
+            wavelet_levels=2,
+            wavelet_flow_bottleneck_dim=128,
+            wavelet_band_normalization=True,
+            wavelet_band_norm_eps=1e-6,
+            wavelet_norm_stats_path=_PLAN1_LIBERO_WAVELET_STATS_L2,
+            wavelet_norm_stats_fallback="error",
+            wavelet_hierarchical_coupling=False,
+            wavelet_shared_noise=False,
+            wavelet_band_loss_weights=None,
+            wavelet_detach_coarse_condition=False,
+            wavelet_use_action_reconstruction_loss=True,
+            lambda_wavelet_recon_loss=3.0,
+            wavelet_use_cross_band_consistency=False,
+            wavelet_cross_band_consistency_weight=0.0,
+            wavelet_conditioning_mode="temporal_pooling",
+            wavelet_use_band_gate=False,
+            lambda_wavelet_flow_loss=0.0,
+            lambda_wavelet_sparse_gate=0.0,
+            lambda_wavelet_gate_supervision=0.0,
+        ),
+    ),
+    _plan1_libero_stage1_config(
+        name="plan1_subband_l2_norm_recon_w10",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            use_wavelet_flow_head=True,
+            wavelet_flow_impl="subband_flow",
+            wavelet_flow_mode="replace",
+            wavelet_levels=2,
+            wavelet_flow_bottleneck_dim=128,
+            wavelet_band_normalization=True,
+            wavelet_band_norm_eps=1e-6,
+            wavelet_norm_stats_path=_PLAN1_LIBERO_WAVELET_STATS_L2,
+            wavelet_norm_stats_fallback="error",
+            wavelet_hierarchical_coupling=False,
+            wavelet_shared_noise=False,
+            wavelet_band_loss_weights=None,
+            wavelet_detach_coarse_condition=False,
+            wavelet_use_action_reconstruction_loss=True,
+            lambda_wavelet_recon_loss=10.0,
             wavelet_use_cross_band_consistency=False,
             wavelet_cross_band_consistency_weight=0.0,
             wavelet_conditioning_mode="temporal_pooling",

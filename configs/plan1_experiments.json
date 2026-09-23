@@ -14,8 +14,9 @@
     "registered_smoke_config": "debug_nh_wafm",
     "portable_original_config": "pi05_libero",
     "registered_legacy_reference": "libero_full_wafm_l2_nogate_loss",
-    "shared_action_norm_stats_dir": "./assets/pi05_libero/physical-intelligence/libero",
-    "wavelet_norm_stats_l2_path": "./assets/pi05_libero/physical-intelligence/libero/wavelet_norm_stats_l2.json",
+    "stage1_dataset_root": "/nfs/lizhenhao/huggingface/lerobot/libero_full",
+    "shared_action_norm_stats_dir": "/nfs/lizhenhao/huggingface/lerobot/libero_full",
+    "wavelet_norm_stats_l2_path": "/nfs/lizhenhao/huggingface/lerobot/libero_full/wavelet_norm_stats_l2.json",
     "require_named_config_for_checkpoint_evaluation": true
   },
   "common_nh_wafm_model_overrides": {
@@ -119,7 +120,7 @@
           "model_overrides": {
             "wavelet_levels": 2,
             "wavelet_band_normalization": true,
-            "wavelet_norm_stats_path": "./assets/pi05_libero/physical-intelligence/libero/wavelet_norm_stats_l2.json",
+            "wavelet_norm_stats_path": "/nfs/lizhenhao/huggingface/lerobot/libero_full/wavelet_norm_stats_l2.json",
             "wavelet_hierarchical_coupling": false,
             "wavelet_conditioning_mode": "temporal_pooling"
           }
