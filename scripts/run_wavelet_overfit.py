@@ -102,11 +102,26 @@ def _band_stats(approx: jax.Array, details: tuple[jax.Array, ...], eps: float) -
 
 def _make_head_and_batch(
     config: OverfitConfig,
+    *,
+    actions: jax.Array | None = None,
+    band_means: jax.Array | None = None,
+    band_stds: jax.Array | None = None,
 ) -> tuple[wavelet_flow_head.NormalizedHierarchicalWaveletFlowHead, _FixedBatch]:
     root_key = jax.random.key(config.seed)
     head_key, noise_key, token_key, time_key = jax.random.split(root_key, 4)
 
-    actions = _synthetic_actions(config)
+    if actions is None:
+        if band_means is not None or band_stds is not None:
+            raise ValueError("Explicit band statistics require explicit actions")
+        actions = _synthetic_actions(config)
+    else:
+        actions = jnp.asarray(actions, dtype=jnp.float32)
+        expected_shape = (config.batch_size, config.action_horizon, config.action_dim)
+        if actions.shape != expected_shape:
+            raise ValueError(f"Fixed actions must have shape {expected_shape}, got {actions.shape}")
+        if (band_means is None) != (band_stds is None):
+            raise ValueError("band_means and band_stds must be provided together")
+
     data_approx, data_details_list, actual_levels = wavelet_flow_head.multi_level_haar_dwt(actions, config.levels)
     if actual_levels != config.levels:
         raise ValueError(
@@ -114,7 +129,17 @@ def _make_head_and_batch(
             "lower --levels or increase --action-horizon"
         )
     data_details = tuple(data_details_list)
-    band_means, band_stds = _band_stats(data_approx, data_details, config.norm_eps)
+    if band_means is None:
+        band_means, band_stds = _band_stats(data_approx, data_details, config.norm_eps)
+    else:
+        band_means = jnp.asarray(band_means, dtype=jnp.float32)
+        band_stds = jnp.asarray(band_stds, dtype=jnp.float32)
+        expected_stats_shape = (config.levels + 1, config.action_dim)
+        if band_means.shape != expected_stats_shape or band_stds.shape != expected_stats_shape:
+            raise ValueError(
+                f"Band statistics must have shape {expected_stats_shape}, got "
+                f"means={band_means.shape}, stds={band_stds.shape}"
+            )
 
     head = wavelet_flow_head.NormalizedHierarchicalWaveletFlowHead(
         action_dim=config.action_dim,
@@ -258,6 +283,7 @@ def _write_results(
     ratios: dict[str, float],
     *,
     passed: bool,
+    provenance: dict[str, object] | None = None,
 ) -> tuple[pathlib.Path, pathlib.Path]:
     config.output_dir.mkdir(parents=True, exist_ok=True)
     json_path = config.output_dir / "wavelet_overfit.json"
@@ -273,22 +299,39 @@ def _write_results(
         "final": history[-1],
         "final_to_initial_ratio": ratios,
         "history": history,
+        "provenance": provenance or {"data_source": "synthetic"},
     }
     json_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     with csv_path.open("w", encoding="utf-8", newline="") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=list(history[0]))
+        writer = csv.DictWriter(csv_file, fieldnames=list(history[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(history)
     return json_path, csv_path
 
 
-def run_overfit(config: OverfitConfig) -> dict[str, object]:
+def run_overfit(
+    config: OverfitConfig,
+    *,
+    actions: jax.Array | None = None,
+    band_means: jax.Array | None = None,
+    band_stds: jax.Array | None = None,
+    provenance: dict[str, object] | None = None,
+) -> dict[str, object]:
     """Train on one fixed batch and return the measured stop-loss result."""
     _validate_config(config)
     if config.platform == "cpu":
-        jax.config.update("jax_platform_name", "cpu")
+        try:
+            jax.config.update("jax_platform_name", "cpu")
+        except RuntimeError:
+            if jax.default_backend() != "cpu":
+                raise
 
-    head, batch = _make_head_and_batch(config)
+    head, batch = _make_head_and_batch(
+        config,
+        actions=actions,
+        band_means=band_means,
+        band_stds=band_stds,
+    )
     optimizer = nnx.Optimizer(head, optax.adam(config.learning_rate), wrt=nnx.Param)
     initial = _metrics_row(0, _evaluate(head, batch))
     history = [initial]
@@ -302,7 +345,7 @@ def run_overfit(config: OverfitConfig) -> dict[str, object]:
 
     ratios = _ratios(history[0], history[-1])
     passed = all(math.isfinite(value) and value <= config.max_final_ratio for value in ratios.values())
-    json_path, csv_path = _write_results(config, history, ratios, passed=passed)
+    json_path, csv_path = _write_results(config, history, ratios, passed=passed, provenance=provenance)
     result: dict[str, object] = {
         "passed": passed,
         "initial": history[0],
@@ -313,7 +356,7 @@ def run_overfit(config: OverfitConfig) -> dict[str, object]:
     }
     if config.require_improvement and not passed:
         raise RuntimeError(
-            "NH-WaFM synthetic overfit gate failed; do not start large-scale training. "
+            "NH-WaFM fixed-batch overfit gate failed; do not start large-scale training. "
             f"Measured final/initial ratios: {ratios}. Results: {json_path}"
         )
     return result

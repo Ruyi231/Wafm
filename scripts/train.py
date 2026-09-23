@@ -139,6 +139,8 @@ def train_step(
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
     batch: tuple[_model.Observation, _model.Actions],
+    *,
+    fold_in_step: bool = True,
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
@@ -158,7 +160,10 @@ def train_step(
         )
         return jnp.mean(chunked_loss), metrics
 
-    train_rng = jax.random.fold_in(rng, state.step)
+    # Normal training samples a new preprocessing/noise/timestep RNG at every
+    # step. Deterministic overfit diagnostics can disable the fold-in so the
+    # complete model repeatedly sees exactly one fixed flow target.
+    train_rng = jax.random.fold_in(rng, state.step) if fold_in_step else rng
     observation, actions, extras = (*batch, None) if len(batch) == 2 else batch
 
     # Filter out frozen params.
