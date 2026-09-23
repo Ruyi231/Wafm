@@ -17,7 +17,7 @@ _适用于 `codex/nh-wafm-plan1` 分支 · JAX/Flax NNX 路径 · 最后按源�
 | 3 | `plan1_subband_l2_no_norm` | 真正子带 flow，不使用 band stats |
 | 4 | `plan1_subband_l2_norm` | 真正子带 flow，使用 band stats |
 
-四者共用 `physical-intelligence/libero`、OpenPI 动作 `norm_stats`、\(\pi_{0.5}\) base checkpoint、seed 42、batch size 256、优化器、EMA 和 30,000 步预算。不要用旧的 `libero_full_wafm_l2_nogate_loss` 代替阶段 1 legacy 配置；它的数据路径和 batch size 不同。
+四者共用本地 LeRobot 数据集 `/nfs/lizhenhao/huggingface/lerobot/libero_full`、数据根目录中的 OpenPI 动作 `norm_stats`、\(\pi_{0.5}\) base checkpoint、seed 42、batch size 128、优化器、EMA 和 30,000 步预算。不要用旧的 `libero_full_wafm_l2_nogate_loss` 代替阶段 1 legacy 配置；它的 batch size 和模型消融边界不同。
 
 ### 验证门控
 
@@ -54,7 +54,7 @@ flowchart TB
 | 环境管理 | `uv` 可用 | `uv --version` |
 | GPU | NVIDIA GPU 与驱动可见 | `nvidia-smi` |
 | Git | 可访问 GitHub 与 submodule | `git --version` |
-| 数据与权重 | 可访问 Hugging Face 数据和 GCS checkpoint | 在统计与 smoke 步骤实际验证 |
+| 数据与权重 | 本地 `libero_full` 可读，base checkpoint 已在 OpenPI cache | 在统计与 smoke 步骤实际验证 |
 | 磁盘 | 能保存数据缓存、四组 checkpoint 和视频 | `df -h` |
 
 所有命令默认从仓库根目录运行。若服务器使用调度器，先申请与正式训练相同型号的 GPU 做 smoke；不要在登录节点启动训练。
@@ -167,29 +167,26 @@ uv run scripts/run_wavelet_overfit.py \
 
 ## 📊 统计文件
 
-### 6. 计算共享动作 `norm_stats`
+### 6. 验证共享动作 `norm_stats`
 
-四个新配置都显式复用 `pi05_libero` 的动作统计目录，所以只计算一次：
-
-```bash
-uv run scripts/compute_norm_stats.py --config-name pi05_libero
-```
-
-确认文件存在且非空：
+四个阶段 1 配置都使用同一个本地 LeRobot 数据目录，并从该目录直接加载已经计算好的动作统计。不要再用 `pi05_libero` 覆盖这份统计：
 
 ```bash
-test -s assets/pi05_libero/physical-intelligence/libero/norm_stats.json
-ls -lh assets/pi05_libero/physical-intelligence/libero/norm_stats.json
+DATASET_ROOT=/nfs/lizhenhao/huggingface/lerobot/libero_full
+test -s "$DATASET_ROOT/norm_stats.json"
+ls -lh "$DATASET_ROOT/norm_stats.json"
+
+uv run --offline python -c "from openpi.shared import normalize; path='/nfs/lizhenhao/huggingface/lerobot/libero_full'; stats=normalize.load(path); assert 'actions' in stats; print({name: value.mean.shape for name, value in stats.items()})"
 ```
 
-如果训练日志出现 `Norm stats not found ... skipping`，立即停止。没有动作归一化时计算出的 wavelet stats 不可用于本实验。
+预期原始 `actions` 统计为 7 维，`state` 为 8 维。模型变换会在动作归一化之后将动作 padding 到模型的 32 维，因此 wavelet stats 的 `action_dim` 仍应为 32。如果日志出现 `Norm stats not found ... skipping`，立即停止。
 
 ### 7. 计算 level 2 wavelet stats
 
 使用目标 norm 配置读取相同的、已经归一化的动作。统计脚本不会实例化模型，并会优先使用模型配置中的输出路径：
 
 ```bash
-uv run scripts/compute_wavelet_norm_stats.py \
+uv run --offline scripts/compute_wavelet_norm_stats.py \
   --config-name plan1_subband_l2_norm \
   --levels 2 \
   --num-batches 1000 \
@@ -199,7 +196,7 @@ uv run scripts/compute_wavelet_norm_stats.py \
 严格加载并核对 metadata：
 
 ```bash
-uv run python -c "from openpi.models.wavelet_normalization import load_wavelet_norm_stats as load; path='./assets/pi05_libero/physical-intelligence/libero/wavelet_norm_stats_l2.json'; stats=load(path, expected_levels=2, expected_action_dim=32, eps=1e-6, expected_action_horizon=10); print(stats.to_dict()['metadata']); print(list(stats.bands))"
+uv run --offline python -c "from openpi.models.wavelet_normalization import load_wavelet_norm_stats as load; path='/nfs/lizhenhao/huggingface/lerobot/libero_full/wavelet_norm_stats_l2.json'; stats=load(path, expected_levels=2, expected_action_dim=32, eps=1e-6, expected_action_horizon=10); print(stats.to_dict()['metadata']); print(list(stats.bands))"
 ```
 
 必须满足：
@@ -216,8 +213,8 @@ uv run python -c "from openpi.models.wavelet_normalization import load_wavelet_n
 
 ```bash
 sha256sum \
-  assets/pi05_libero/physical-intelligence/libero/norm_stats.json \
-  assets/pi05_libero/physical-intelligence/libero/wavelet_norm_stats_l2.json
+  /nfs/lizhenhao/huggingface/lerobot/libero_full/norm_stats.json \
+  /nfs/lizhenhao/huggingface/lerobot/libero_full/wavelet_norm_stats_l2.json
 ```
 
 ## ⚙️ 训练与 checkpoint smoke
@@ -390,7 +387,7 @@ uv run scripts/serve_policy.py \
 
 server 必须完成模型、wavelet stats、checkpoint 参数和 checkpoint 内动作 `norm_stats` 的加载。训练和评测配置名不得混用。
 
-当前 checkpoint 会保存动作 `norm_stats`，但不会内嵌独立的 wavelet stats JSON。复制 checkpoint 到其他机器时，还必须把 `assets/pi05_libero/physical-intelligence/libero/wavelet_norm_stats_l2.json` 放到相同配置路径，并核对 SHA-256。
+当前 checkpoint 会保存动作 `norm_stats`，但不会内嵌独立的 wavelet stats JSON。复制 checkpoint 到其他机器时，还必须提供 `/nfs/lizhenhao/huggingface/lerobot/libero_full/wavelet_norm_stats_l2.json`，或在目标机器上显式覆盖 `wavelet_norm_stats_path`，并核对 SHA-256。
 
 ### 17. 运行最小 LIBERO rollout
 
@@ -436,21 +433,21 @@ uv run scripts/train.py <stage1_config> \
 
 ### `Norm stats not found ... skipping`
 
-原因是共享动作统计未生成，或命令不在仓库根目录运行。
+原因是本地数据目录或其中的共享动作统计不可读。
 
 ```bash
-uv run scripts/compute_norm_stats.py --config-name pi05_libero
-test -s assets/pi05_libero/physical-intelligence/libero/norm_stats.json
+test -s /nfs/lizhenhao/huggingface/lerobot/libero_full/norm_stats.json
+uv run --offline python -c "from openpi.training import config; cfg=config.get_config('plan1_subband_l2_norm'); data=cfg.data.create(cfg.assets_dirs, cfg.model); assert data.norm_stats is not None and 'actions' in data.norm_stats; print(data.repo_id, data.asset_id)"
 ```
 
-重新计算 wavelet stats 后再训练；不要继续使用此前未归一化动作得到的统计。
+确认配置能够加载现有动作统计后，重新计算 wavelet stats 再训练；不要继续使用此前未归一化动作得到的统计。
 
 ### `Wavelet normalization statistics are required`
 
 确认文件路径与 config 完全一致：
 
 ```bash
-test -s assets/pi05_libero/physical-intelligence/libero/wavelet_norm_stats_l2.json
+test -s /nfs/lizhenhao/huggingface/lerobot/libero_full/wavelet_norm_stats_l2.json
 PYTHONPATH=src JAX_PLATFORMS=cpu uv run pytest -q \
   src/openpi/training/config_test.py \
   scripts/compute_wavelet_norm_stats_test.py

@@ -60,8 +60,8 @@ wavelet mean/std 依赖：
 
 阶段 1 服务器验证前仍必须：
 
-1. 在 `assets/pi05_libero/physical-intelligence/libero` 生成真实动作 `norm_stats`
-2. 用同一归一化数据生成 `wavelet_norm_stats_l2.json`
+1. 验证 `/nfs/lizhenhao/huggingface/lerobot/libero_full/norm_stats.json` 能被四个阶段 1 配置严格加载
+2. 用同一归一化数据在该目录生成 `wavelet_norm_stats_l2.json`
 3. 运行新增配置测试、debug 训练、checkpoint resume 和短训练门槛
 4. 训练和 `serve_policy.py` 使用同一个配置名
 
