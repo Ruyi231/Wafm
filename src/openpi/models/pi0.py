@@ -10,6 +10,8 @@ from typing_extensions import override
 from openpi.models import model as _model
 from openpi.models import pi0_config
 from openpi.models import raw_velocity_head as _raw_velocity_head
+from openpi.models import wavelet_flow_loss as _wavelet_flow_loss
+from openpi.models import wavelet_velocity_head as _wavelet_velocity_head
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
@@ -69,6 +71,8 @@ class Pi0(_model.BaseModel):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
         self.action_velocity_head = config.action_velocity_head
+        self.lambda_wavelet_flow_loss = config.lambda_wavelet_flow_loss
+        self.wavelet_levels = config.wavelet_levels
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -101,6 +105,7 @@ class Pi0(_model.BaseModel):
             self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = None
         self.raw_velocity_head = None
+        self.wavelet_velocity_head = None
         if self.action_velocity_head == "linear":
             self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
         elif self.action_velocity_head == "raw_film":
@@ -109,6 +114,14 @@ class Pi0(_model.BaseModel):
                 token_dim=action_expert_config.width,
                 bottleneck_dim=config.raw_film_bottleneck_dim,
                 num_experts=config.raw_film_num_experts,
+                rngs=rngs,
+            )
+        elif self.action_velocity_head == "wavelet_film":
+            self.wavelet_velocity_head = _wavelet_velocity_head.WaveletFiLMVelocityHead(
+                action_dim=config.action_dim,
+                token_dim=action_expert_config.width,
+                bottleneck_dim=config.wavelet_film_bottleneck_dim,
+                levels=config.wavelet_levels,
                 rngs=rngs,
             )
         else:
@@ -209,6 +222,10 @@ class Pi0(_model.BaseModel):
             if self.action_out_proj is None:
                 raise ValueError("linear action velocity head was not initialized")
             return self.action_out_proj(action_token_outputs)
+        if self.action_velocity_head == "wavelet_film":
+            if self.wavelet_velocity_head is None:
+                raise ValueError("wavelet_film action velocity head was not initialized")
+            return self.wavelet_velocity_head(noisy_actions, action_token_outputs)
         if self.raw_velocity_head is None:
             raise ValueError("raw_film action velocity head was not initialized")
         return self.raw_velocity_head(noisy_actions, action_token_outputs)
@@ -239,7 +256,14 @@ class Pi0(_model.BaseModel):
         )
         v_t = self._predict_action_velocity(x_t, suffix_out[:, -self.action_horizon :])
 
-        return jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        return self._flow_matching_loss(v_t, u_t)
+
+    def _flow_matching_loss(self, velocity: _model.Actions, target: _model.Actions) -> at.Array:
+        loss = jnp.mean(jnp.square(velocity - target), axis=-1)
+        if self.lambda_wavelet_flow_loss > 0:
+            auxiliary = _wavelet_flow_loss.output_wavelet_flow_loss(velocity, target, self.wavelet_levels)
+            loss = loss + self.lambda_wavelet_flow_loss * auxiliary
+        return loss
 
     @override
     def sample_actions(

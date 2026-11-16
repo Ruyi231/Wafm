@@ -787,7 +787,9 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("/nfs/lizhenhao/openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/nfs/lizhenhao/openpi-assets/checkpoints/pi05_base/params"
+        ),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
     ),
@@ -816,7 +818,9 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("/nfs/lizhenhao/openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/nfs/lizhenhao/openpi-assets/checkpoints/pi05_base/params"
+        ),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
     ),
@@ -1028,6 +1032,44 @@ _CONFIGS = [
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
 ]
+
+
+def shared_loss_control_configs(configs: Sequence[TrainConfig]) -> list[TrainConfig]:
+    """Clone existing full-LIBERO controls without changing their training protocol."""
+    by_name = {config.name: config for config in configs}
+    controls = []
+    for name in ("libero_full_raw_film_m384", "libero_full_raw_3xfilm_m128"):
+        reference = by_name[name]
+        controls.append(
+            dataclasses.replace(
+                reference,
+                name=f"{name}_wavloss",
+                model=dataclasses.replace(reference.model, lambda_wavelet_flow_loss=0.1, wavelet_levels=2),
+                resume=False,
+                overwrite=False,
+            )
+        )
+    reference = by_name["libero_full_raw_3xfilm_m128"]
+    controls.extend(
+        dataclasses.replace(
+            reference,
+            name=f"libero_full_wfm_l2_shared_{'loss' if use_loss else 'noloss'}",
+            model=dataclasses.replace(
+                reference.model,
+                action_velocity_head="wavelet_film",
+                wavelet_levels=2,
+                wavelet_film_bottleneck_dim=128,
+                lambda_wavelet_flow_loss=0.1 if use_loss else 0.0,
+            ),
+            resume=False,
+            overwrite=False,
+        )
+        for use_loss in (False, True)
+    )
+    return controls
+
+
+_CONFIGS.extend(shared_loss_control_configs(_CONFIGS))
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")

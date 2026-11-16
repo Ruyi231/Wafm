@@ -33,13 +33,23 @@ class Pi0Config(_model.BaseModelConfig):
     discrete_state_input: bool = None  # type: ignore
 
     # Selects the action-velocity output parameterization. The default preserves the official linear head.
-    action_velocity_head: Literal["linear", "raw_film"] = "linear"
+    action_velocity_head: Literal["linear", "raw_film", "wavelet_film"] = "linear"
     raw_film_bottleneck_dim: int = 128
     raw_film_num_experts: int = 1
+    wavelet_levels: int = 2
+    wavelet_film_bottleneck_dim: int = 128
+    # Zero preserves all existing linear/raw training objectives and checkpoints.
+    lambda_wavelet_flow_loss: float = 0.0
 
     pytorch_compile_mode: str | None = "max-autotune"
 
     def __post_init__(self):
+        if self.action_velocity_head not in ("linear", "raw_film", "wavelet_film"):
+            raise ValueError(f"Unsupported action_velocity_head: {self.action_velocity_head!r}")
+        if self.lambda_wavelet_flow_loss < 0:
+            raise ValueError("lambda_wavelet_flow_loss must be non-negative")
+        if self.wavelet_levels < 1 or self.wavelet_film_bottleneck_dim < 1:
+            raise ValueError("wavelet_levels and wavelet_film_bottleneck_dim must be positive")
         if self.raw_film_bottleneck_dim < 1:
             raise ValueError(f"raw_film_bottleneck_dim must be positive, got {self.raw_film_bottleneck_dim}")
         if self.raw_film_num_experts < 1:

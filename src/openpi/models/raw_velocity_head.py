@@ -1,9 +1,13 @@
+from __future__ import annotations
+
 import math
+from typing import TYPE_CHECKING
 
 import flax.nnx as nnx
 import jax.numpy as jnp
 
-from openpi.shared import array_typing as at
+if TYPE_CHECKING:
+    from openpi.shared import array_typing as at
 
 
 def raw_film_parameter_count(
