@@ -10,20 +10,29 @@
 git switch exp/capacity-matched-raw-heads
 git pull --ff-only
 
-# 只打印命令，不启动训练、不加载env.sh
-DRY_RUN=1 bash train_shared_loss.sh raw_3x_loss 0 1
+# 只打印串行计划，不启动训练、不加载env.sh
+DRY_RUN=1 bash train_shared_loss.sh
 
-# 最关键的缺失对照：容量匹配Raw头 + λ=.1小波损失
-CUDA_VISIBLE_DEVICES=3 bash train_shared_loss.sh raw_3x_loss 0 1
+# 单卡串行：先Raw-3×M128+loss，成功结束后再Raw-M384+loss
+# 两项均只跑默认seed=42；将0换成H200的实际GPU编号
+GPU_ID=0 bash train_shared_loss.sh
 
-# 若尚无这两个seed的容量匹配Raw无loss结果，也需要补
-CUDA_VISIBLE_DEVICES=3 bash train_shared_loss.sh raw_3x_noloss 0 1
+# 若要与已经完成的seed0实验配对，显式指定SEED=0
+GPU_ID=0 SEED=0 bash train_shared_loss.sh
+
+# 单独补某一组无loss对照，同样只跑一个默认seed
+GPU_ID=0 bash train_shared_loss.sh raw_3x_noloss
 ```
 
-脚本从项目目录运行，默认读取 `env.sh`，可通过 `TRAIN_ENV_FILE`指定其他环境脚本；每个seed使用独立实验名和日志，不传 `--overwrite`或`--resume`。`EXP_PREFIX`可指定新的运行名称；训练协议和git版本保存到日志旁的config文件中。不要把一个seed的checkpoint当另一个seed的初始化。
+脚本从项目目录运行，默认读取 `env.sh`，可通过 `TRAIN_ENV_FILE`指定其他环境脚本。默认选择 `raw_loss` 队列（先3×M128，后M384），默认只跑seed42，与分支现有默认seed一致；不会自动扩展到seed0/1。单seed先作为探索性对照，不能据此判断跨训练种子的稳定性；与已有seed0/1结果比较时需注明seed不同，或显式设 `SEED=0`/`SEED=1`。
+
+GPU选择顺序为 `GPU_ID`、已有 `CUDA_VISIBLE_DEVICES`、默认0；只接受一张卡的编号或GPU/MIG UUID，拒绝多GPU列表。前一训练及其日志进程退出后才启动下一项，训练失败立即停止整个队列。开跑前会检查全部计划任务，已有日志或checkpoint时拒绝运行，不传 `--overwrite`或`--resume`。
+
+每组使用独立实验名和日志。`EXP_PREFIX`可指定新的运行名称；训练协议、实际seed、GPU和git版本保存到日志旁的config文件中。不要把一个seed的checkpoint当另一个seed的初始化。后续若明确需要多seed，仍可显式传入，如 `bash train_shared_loss.sh raw_loss 0 1`，它们也会严格串行。
 
 | 启动参数 | 训练配置 | 预测头 | λ |
 |---|---|---|---:|
+| `raw_loss`（默认队列） | 先`raw_3x_loss`，再`raw_wide_loss` | 两种Raw头依次训练 | .1 |
 | `raw_3x_noloss` | `libero_full_raw_3xfilm_m128` | Raw-3×M128 | 0 |
 | `raw_3x_loss` | `libero_full_raw_3xfilm_m128_wavloss` | Raw-3×M128 | .1 |
 | `raw_wide_noloss` | `libero_full_raw_film_m384` | Raw-M384 | 0 |
@@ -53,8 +62,8 @@ L = \operatorname{mean}(v_t-u_t)^2
 若要完整严格2×2比较，再运行：
 
 ```bash
-bash train_shared_loss.sh wfm_noloss 0 1
-bash train_shared_loss.sh wfm_loss 0 1
+GPU_ID=0 bash train_shared_loss.sh wfm_noloss
+GPU_ID=0 bash train_shared_loss.sh wfm_loss
 ```
 
 若已有λ=0的WFM结果，需确认协议及实现一致后才复用。原始线性base不能替代容量匹配Raw无loss。已有WFM分支的参数命名不同，旧WFM checkpoint继续使用原代码和配置评估，不要用本分支的新WFM配置直接加载旧WFM权重。
@@ -66,7 +75,7 @@ bash train_shared_loss.sh wfm_loss 0 1
 ```bash
 uv run scripts/serve_policy.py --port 42003 policy:checkpoint \
   --policy.config libero_full_raw_3xfilm_m128_wavloss \
-  --policy.dir checkpoints/libero_full_raw_3xfilm_m128_wavloss/libero_full_raw_3xfilm_m128_wavloss_seed0/29999
+  --policy.dir checkpoints/libero_full_raw_3xfilm_m128_wavloss/libero_full_raw_3xfilm_m128_wavloss_seed42/29999
 ```
 
 检查点目录以实际生成结果为准。保持suite、初态、评估seed及每任务rollout数相同；不要把训练seed当成评估seed。新配置仅支持JAX `scripts/train.py`；本次未接入 `train_pytorch.py`。
