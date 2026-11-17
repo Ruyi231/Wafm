@@ -1494,6 +1494,18 @@ _CONFIGS = [
     *polaris_config.get_polaris_configs(),
 ]
 
+# Lambda sensitivity: inherit the best L2/M128/no-gate run and change only the
+# auxiliary subband flow-loss weight. Keep the original lambda=0.1 config intact.
+_wafm_lambda_base = next(config for config in _CONFIGS if config.name == "libero_full_wafm_l2_nogate_loss")
+_CONFIGS.extend(
+    dataclasses.replace(
+        _wafm_lambda_base,
+        name=f"{_wafm_lambda_base.name}_lambda_{suffix}",
+        model=dataclasses.replace(_wafm_lambda_base.model, lambda_wavelet_flow_loss=loss_weight),
+    )
+    for suffix, loss_weight in (("0p03", 0.03), ("0p3", 0.3))
+)
+
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")
 _CONFIGS_DICT = {config.name: config for config in _CONFIGS}
